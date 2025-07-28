@@ -29,6 +29,16 @@ BACKGROUND_COLOR :: rl.GRAY
 DARK_TILE_COLOR :: rl.LIGHTGRAY
 LIGHT_TILE_COLOR :: rl.WHITE
 
+PIECE_POINTS := [Piece_Type]i32{
+	.None = 0,
+	.Pawn = 1,
+	.Knight = 3,
+	.Bishop = 3,
+	.Rook = 5,
+	.Queen = 9,
+	.King = 0,
+}
+
 Game_Memory :: struct {
 	app_state: App_State,
 	scene: Scene,
@@ -37,9 +47,17 @@ Game_Memory :: struct {
 	is_music_enabled: bool,
 	debug: bool,
 	render_texture: rl.RenderTexture,
-	board: Board,
-	selected_piece_position: Maybe(Position),
+	using board: Board,
+	selected_piece: Maybe(Selected_Piece_Data),
 	is_white_bottom: bool,
+}
+
+Player_Color :: Piece_Color
+
+Selected_Piece_Data :: struct {
+	position: Position,
+	tile: Tile,
+	possible_moves: Move_Results,
 }
 
 App_State :: enum {
@@ -162,29 +180,29 @@ draw :: proc() {
 				tile_render_pos := Vec2i{i32(math.round(render_pos.x)), i32(math.round(render_pos.y))}
 				rl.DrawText(text, tile_render_pos.x, tile_render_pos.y, 28, color)
 
-				// top left of tile
-				rl.DrawRectangle(i32(tile_render_pos.x), i32(tile_render_pos.y), 1, 1, rl.RED)
+				if g.debug {
+					// top left of tile :: sprite container origin
+					rl.DrawRectangle(i32(tile_render_pos.x), i32(tile_render_pos.y), 1, 1, rl.RED)
+				}
 			}
 		}
 
-		// TODO: draw selected piece visuals: highlight piece, show moves
-		if g.selected_piece_position != nil {
-			piece_tile_pos := g.selected_piece_position.?
+		// TODO: draw selected piece visuals: highlight piece, show moves, get moves (calc collisions, captures)
+		if g.selected_piece != nil {
+			selected_piece := g.selected_piece.?
+			selected_piece_tile_pos := selected_piece.position
 
 			// border tile for now
-			sprite_origin := board_tile_pos_to_sprite_logical_render_pos(piece_tile_pos.x, piece_tile_pos.y)
+			sprite_origin := board_tile_pos_to_sprite_logical_render_pos(selected_piece_tile_pos.x, selected_piece_tile_pos.y)
 			rl.DrawRectangleLinesEx({sprite_origin.x, sprite_origin.y, tile_size, tile_size}, 2, rl.GREEN)
 
 			// draw possible moves
-			tile := get_tile_by_position(piece_tile_pos)
-			// TODO: right here
-			arr := get_possible_move_positions(tile, piece_tile_pos)
-			for pos in sa.slice(&arr) {
-				move_origin := board_tile_pos_to_sprite_logical_render_pos(pos.x, pos.y)
+			move_results := selected_piece.possible_moves
+			for move_result in sa.slice(&move_results) {
+				move_origin := board_tile_pos_to_sprite_logical_render_pos(move_result.position.x, move_result.position.y)
 				rl.DrawRectangleLinesEx({move_origin.x, move_origin.y, tile_size, tile_size}, 2, rl.PURPLE)
 			}
 		}
-		
 
 		if g.debug {
 			// tile "grid"
@@ -206,6 +224,7 @@ draw :: proc() {
 					rl.BLUE,
 				)
 			}
+
 			// draw debug center
 			rl.DrawRectangle(LOGICAL_SCREEN_WIDTH/2, LOGICAL_SCREEN_HEIGHT/2, 3, 3, rl.ORANGE)
 			rl.DrawRectangleLines(i32((math.round(board_bounds.x))), i32(math.round(board_bounds.y)), i32(math.round(board_bounds.width)), i32(math.round(board_bounds.height)), rl.GREEN)
@@ -394,8 +413,7 @@ process_global_input :: proc() {
 ///////////////////////////////////////////////////////////////////////////////
 
 Play_Action :: enum {
-	Select_Piece,
-	Drop_Piece,
+	Left_Click_Board,
 }
 
 // NB: do reverse, offset, then scale
@@ -413,42 +431,145 @@ is_mouse_over_board :: proc() -> bool {
 	return is_mouse_over_rect(board_bounds.x, board_bounds.y, board_bounds.width, board_bounds.height)
 }
 
+EMPTY_TILE :: Tile{piece_type = .None}
 process_play_input :: proc(s: ^Play_Scene) {
-	actions: bit_set[Play_Action]
+	// actions: bit_set[Play_Action]
 
 	for action_ in Play_Action {
-		switch action_ {
-		case .Select_Piece:
-			if is_mouse_over_board() && rl.IsMouseButtonPressed(.LEFT) {
-				actions += {action_}
+		action_switch: switch action_ {
+		case .Left_Click_Board:
+			if mouse_condition := is_mouse_over_board() && rl.IsMouseButtonPressed(.LEFT); !mouse_condition {
+				break
 			}
-		case .Drop_Piece:
-			if is_mouse_over_board() && rl.IsMouseButtonPressed(.LEFT) && g.selected_piece_position != nil {
-				actions += {action_}
+
+			pr("Detected Left Click Board")
+			mouse_tile_pos := get_tile_position_from_mouse_already_over_board()
+
+			// if friendly piece, toggle select piece
+			clicked_tile, _ := get_tile_by_position(mouse_tile_pos)
+			if clicked_tile.piece_type != .None && clicked_tile.piece_color == g.current_player {
+				// if clicked tile pos corresponds to current selected piece
+				if val := g.selected_piece; val != nil && mouse_tile_pos == g.selected_piece.?.position{
+					g.selected_piece = nil
+					pr("Action: DeSelect_Piece")
+				} else {
+					selected_piece := Selected_Piece_Data{
+						position = mouse_tile_pos,
+						tile = clicked_tile,
+						possible_moves = get_possible_moves(mouse_tile_pos),
+					}
+					g.selected_piece = selected_piece
+					pr("Action: Select_Piece")
+				}
+				break
+			}
+
+			// if a piece is already selected:
+			if g.selected_piece != nil {
+				selected_piece := g.selected_piece.?
+
+				is_possible_move: bool
+				// A. If it is a possible move, do it
+				for move_result in sa.slice(&selected_piece.possible_moves) {
+					if mouse_tile_pos == move_result.position {
+						is_possible_move = true
+						pr("Action: Piece_Action")
+
+						switch move_result.piece_action {
+						case .Travel:
+							pr("TRAVEL")
+							// Update the selected piece and store in new position
+							selected_piece_tile := selected_piece.tile
+
+							// update double move data before has_piece_moved is flagged
+							if selected_piece_tile.piece_type == .Pawn && !selected_piece_tile.has_piece_moved && abs(move_result.position.y - selected_piece.position.y) == 2 {
+								g.board.last_double_move_turn = g.n_turns
+								g.board.last_double_move_end_position = move_result.position
+							}
+
+							curr_pos := selected_piece.position
+							set_tile(curr_pos, EMPTY_TILE)
+
+							new_tile := selected_piece_tile
+							new_tile.has_piece_moved = true
+							new_pos := mouse_tile_pos
+							set_tile(new_pos, new_tile)
+
+							end_turn()
+
+						case .En_Passant:
+							// Captured piece in special position
+							pr("EN PASSANT")
+							selected_piece_tile := selected_piece.tile
+
+							curr_pos := selected_piece.position
+							set_tile(curr_pos, EMPTY_TILE)
+
+							new_pos := mouse_tile_pos
+
+							captured_position := g.last_double_move_end_position
+							captured_tile, _ := get_tile_by_position(captured_position)
+							if g.current_player == .White {
+								sa.push(&g.board.white_captures, captured_tile.piece_type)
+							} else {
+								sa.push(&g.board.black_captures, captured_tile.piece_type)
+							}
+							set_tile(captured_position, EMPTY_TILE)
+
+							new_tile := selected_piece_tile
+							new_tile.has_piece_moved = true
+							set_tile(new_pos, new_tile)
+
+							update_points(g.current_player, captured_tile.piece_type)
+
+							end_turn()
+
+						case .Capture:
+							// Captured piece in new position
+							// Update the selected piece and store in new position
+							pr("CAPTURE")
+							selected_piece_tile := selected_piece.tile
+
+							curr_pos := selected_piece.position
+							set_tile(curr_pos, EMPTY_TILE)
+
+							new_pos := mouse_tile_pos
+
+							captured_tile, _ := get_tile_by_position(new_pos)
+							if g.current_player == .White {
+								sa.push(&g.board.white_captures, captured_tile.piece_type)
+							} else {
+								sa.push(&g.board.black_captures, captured_tile.piece_type)
+							}
+
+							new_tile := selected_piece_tile
+							new_tile.has_piece_moved = true
+							set_tile(new_pos, new_tile)
+
+							end_turn()
+
+						case .Kingside_Castle:
+							pr("KINGSIDE CASTLE")
+						case .Queenside_Castle:
+							pr("QUEENSIDE CASTLE")
+						case .None:
+							unreachable()
+						}
+						break action_switch // TODO: test can this break to the switch?
+					}
+				}
+
+				// B. If not a possible move (and not friendly), deselect
+				if !is_possible_move {
+					g.selected_piece = nil
+					pr("Action: Deselect_Piece")
+				}
 			}
 		}
 	}
 
 	if rl.IsKeyPressed(.P) do s.is_paused = !s.is_paused
 	if s.is_paused do return
-
-	if .Select_Piece in actions {
-		pos := get_tile_position_from_mouse_already_over_board()
-		tile := get_tile_by_position(pos)
-		if tile.piece_type != .None {
-			g.selected_piece_position = pos
-		} else {
-			g.selected_piece_position = nil
-		}
-		pr("Select_Piece")
-	} else if .Drop_Piece in actions {
-		pos := get_tile_position_from_mouse_already_over_board()
-		// check if valid move
-		// handle capture
-		// drop into place
-		pr("Drop_Piece")
-	}
-
 }
 
 draw_sprite :: proc(texture_id: Texture_ID, pos: Vec2, size: Vec2, rotation: f32 = 0, scale: f32 = 1, tint: rl.Color = rl.WHITE) {
@@ -549,7 +670,7 @@ Piece_Type :: enum {
 Tile :: struct {
 	piece_type: Piece_Type,
 	piece_color: Piece_Color,
-	used_pawn_first_move: bool,
+	has_piece_moved: bool,
 }
 
 Piece_Color :: enum u8 {
@@ -560,20 +681,25 @@ Piece_Color :: enum u8 {
 // contains board-specific gameplay state
 Board :: struct {
 	tiles: [8][8]Tile,
-	has_white_king_moved: bool,
-	has_black_king_moved: bool,
-	has_black_black_rook_moved: bool,
-	has_white_black_rook_moved: bool,
-	has_black_white_rook_moved: bool,
-	has_white_white_rook_moved: bool,
+	n_turns: i32,
+	current_player: Player_Color,
+
+	last_double_move_end_position: Position,
+	last_double_move_turn: i32,
+
 	is_white_king_checked: bool,
 	is_black_king_checked: bool,
 	white_captures: sa.Small_Array(15, Piece_Type),
 	black_captures: sa.Small_Array(15, Piece_Type),
+	points: [Player_Color]i32
 }
 
-get_tile_by_position :: proc(pos: Position) -> Tile {
-	return g.board.tiles[pos.y][pos.x]
+// Also tests for board boundary
+get_tile_by_position :: proc(pos: Position) -> (tile: Tile, in_bounds: bool) {
+	if pos.x < 0 || pos.x > 7 || pos.y < 0 || pos.y > 7 {
+		return {}, false
+	}
+	return g.board.tiles[pos.y][pos.x], true
 }
 
 init_board :: proc() -> Board {
@@ -595,25 +721,96 @@ init_board :: proc() -> Board {
 	}
 	return {
 		tiles = tiles,
+		n_turns = 1,
+		current_player = .White,
 	}
 }
 
-get_possible_move_positions :: proc(tile: Tile, pos: Position) -> sa.Small_Array(21, Position) {
+Move_Result :: struct {
+	position: Position,
+	piece_action: Piece_Action,
+}
+Piece_Action :: enum u8 {
+	None,
+	Travel,
+	Capture,
+	En_Passant,
+	Queenside_Castle,
+	Kingside_Castle,
+}
+MAX_ELEMENTS_FOR_MOVE_RESULTS :: 64
+Move_Results :: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Move_Result)
+
+get_possible_moves :: proc(pos: Position) -> Move_Results {
+	tile, _ := get_tile_by_position(pos)
 	// TODO: special moves
 	// NB: moves beyond captures or beyond board
 	// assume white bottom unless false
-	arr: sa.Small_Array(21, Position)
+	// Either check landing spots (knight) or cast a ray (stop at collision)
+
+	color_and_side_factor: i32 = tile.piece_color == .White ? 1 : -1
+	color_and_side_factor *= g.is_white_bottom ? 1 : -1
+
+	arr: Move_Results
 	#partial switch tile.piece_type {
 	case .Pawn:
-		rel_pos := tile.piece_color == .White ? Position{0,1} : Position{0,-1}
-		rel_pos *= g.is_white_bottom ? 1 : -1
-		abs_pos := pos + rel_pos
-		sa.push(&arr, abs_pos)
-		// TODO: blocked by a piece
-		// TODO: can capture a piece
+		// CASE pawn en passants, forced move: if possible then this is player's only move
+		// TODO: refactor this to precede selection/move logic (for now keep here for testing)
+		// Must run this code before player selects a piece and notify him (highlight / tooltip / flashing piece / "En Passant Triggered")
+
+		// this pawn is on 5th rank (white) or 4th rank (black)
+		is_pawn_on_passant_row_condition_satisfied: bool
+		if (pos.y == 4 && g.current_player == .White) || (pos.y == 3 && g.current_player == .Black) {
+			is_pawn_on_passant_row_condition_satisfied = true
+		}
+
+		// last double move was previous turn and is adjacent to this pawn
+		is_double_move_condition_satisfied: bool
+		if (g.last_double_move_turn == g.board.n_turns - 1) && (g.last_double_move_end_position.x == pos.x - 1 || g.last_double_move_end_position.x == pos.x + 1) {
+			is_double_move_condition_satisfied = true
+		}
+
+		if is_pawn_on_passant_row_condition_satisfied && is_double_move_condition_satisfied {
+			// capture end position is effectively behind the double moved pawn
+			capture_position := g.board.last_double_move_end_position 
+			capture_offset_y: i32 = g.board.current_player == .White ? 1 : -1
+			capture_position.y += capture_offset_y
+			sa.push(&arr, Move_Result{position = capture_position, piece_action = .En_Passant})
+			return arr
+		}
+
+		// CASE pawn basic move
+		move_direction := Position{0,1} * color_and_side_factor
+
+		// cast ray of length 1 for basic move
+		pos_0 := pos + move_direction
+		if tile_0, in_bounds := get_tile_by_position(pos_0); tile_0.piece_type == .None && in_bounds {
+			sa.push(&arr, Move_Result{position = pos_0, piece_action = .Travel})
+		} 
+
+		// cast ray of length 2 for first move
+		if !tile.has_piece_moved {
+			pos_1 := pos + move_direction * 2
+			if tile_1, in_bounds := get_tile_by_position(pos_1); tile_1.piece_type == .None && in_bounds {
+				sa.push(&arr, Move_Result{position = pos_1, piece_action = .Travel})
+			}
+		}
+
+		// CASE pawn captures
+		// TODO: redo capture logic, only do the move if it's enemy
+		capture_position_right_1 := pos + Position{1,1} * color_and_side_factor
+		tile_cap_right_1, _ := get_tile_by_position(capture_position_right_1)
+		if tile_cap_right_1.piece_type != .None && tile_cap_right_1.piece_color != g.current_player {
+			sa.push(&arr, Move_Result{position = capture_position_right_1, piece_action = .Capture})
+		}
+
+		capture_position_left_1 := pos + Position{-1,1} * color_and_side_factor
+		tile_cap_left_1, _ := get_tile_by_position(capture_position_left_1)
+		if tile_cap_left_1.piece_type != .None && tile_cap_left_1.piece_color != g.current_player {
+			sa.push(&arr, Move_Result{position = capture_position_left_1, piece_action = .Capture})
+		}
+
 	}
-	// TODO: filter out beyond board
-	// TODO: filter out blocked moves (by own piece or beyond a capturable piece)
 	return arr
 }
 
@@ -625,4 +822,22 @@ get_tile_position_from_mouse_already_over_board :: proc() -> Position {
 	dy := math.round(board_bounds.y + board_bounds.height - mouse_pos.y)
 
 	return {i32(math.floor(dx / tile_size)), i32(math.floor(dy / tile_size))}
+}
+
+set_tile :: proc(pos: Position, tile: Tile) {
+	pr("set board tile to this", tile)
+	g.board.tiles[pos.y][pos.x] = tile
+}
+
+end_turn :: proc() {
+	g.selected_piece = nil
+	g.n_turns += 1
+	switch g.current_player {
+	case .Black: g.current_player = .White
+	case .White: g.current_player = .Black
+	}
+}
+
+update_points :: proc(current_player: Player_Color, piece_type: Piece_Type) {
+	g.board.points[current_player] += PIECE_POINTS[piece_type]
 }
