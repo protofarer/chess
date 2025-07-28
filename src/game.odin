@@ -4,6 +4,8 @@ import "core:fmt"
 import "core:log"
 import "core:math/linalg"
 import "core:math"
+import "core:time"
+import "core:strings"
 import sa "core:container/small_array"
 import rl "vendor:raylib"
 
@@ -42,15 +44,22 @@ PIECE_POINTS := [Piece_Type]i32{
 
 Game_Memory :: struct {
 	app_state: App_State,
-	scene: Scene,
+	debug: bool,
 	resman: ^Resource_Manager,
+	render_texture: rl.RenderTexture,
+	scene: Scene,
 	audman: Audio_Manager,
 	is_music_enabled: bool,
-	debug: bool,
-	render_texture: rl.RenderTexture,
 	using board: Board,
 	selected_piece: Maybe(Selected_Piece_Data),
 	is_white_bottom: bool,
+	time: struct {
+		game_start: time.Time,
+		total: time.Duration,
+		players_total: [Player_Color]time.Duration,
+		turn_start: time.Time,
+		turn_running: time.Duration,
+	},
 }
 
 Player_Color :: Piece_Color
@@ -113,6 +122,9 @@ update :: proc() {
 				// next_scene = Game_Over_Scene{}
 			}
 		}
+		g.time.total = time.since(g.time.game_start)
+		g.time.turn_running = time.since(g.time.turn_start)
+
 	case:
 	}
 }
@@ -243,13 +255,18 @@ draw :: proc() {
 	rl.DrawText(fmt.ctprintf("DRAW_butt"), 100, 5, 8, rl.WHITE)
 
 	// TODO: update time in update frame
-	get_time_display_string ::proc() -> cstring {
+	get_running_time_display_string ::proc(d: time.Duration) -> cstring {
 		// set/get Duration since game start: time.since(game_start_time)
 		// get h,m,s: time.clock_from_duration
 		// get days: time.duration_hours(total_time) / 24, floor
 		// format string
+		now := time.now()
+		buf: [64]u8
+		text := time.to_string_hms_12(now, buf[:])
+		cstr := strings.clone_to_cstring(text)
+		return cstr
 	}
-	time_string := fmt.ctprintf("TIME: %v", get_time_display_string())
+	time_string := fmt.ctprintf("TIME: %v", get_running_time_display_string(g.time.total))
 
 	rl.DrawText(time_string, 200, 5, 8, rl.WHITE)
 	rl.DrawText(fmt.ctprintf("EXIT"), 300, 5, 8, rl.WHITE)
@@ -292,6 +309,18 @@ init :: proc() {
 	g.is_music_enabled = true
 
 	g.board = init_board()
+	g.time = {
+		game_start = time.now(),
+		total = 0,
+		players_total = {},
+		turn_start = time.now(),
+		turn_running = 0
+	}
+	// time: struct {
+	// 	start: time.Time,
+	// 	total: time.Duration,
+	// 	players: [Player_Color]time.Duration,
+	// }
 
 	// TODO: depends on roll. In local play (same machine) Player A is always bot.
 	g.is_white_bottom = true
@@ -960,13 +989,15 @@ get_tile_position_from_mouse_already_over_board :: proc() -> Position {
 }
 
 set_tile :: proc(pos: Position, tile: Tile) {
-	pr("set board tile to this", tile)
 	g.board.tiles[pos.y][pos.x] = tile
 }
 
 end_turn :: proc() {
 	g.selected_piece = nil
 	g.n_turns += 1
+	g.time.players_total[g.current_player] += g.time.turn_running
+	g.time.turn_running = 0
+	g.time.turn_start = time.now()
 	switch g.current_player {
 	case .Black: g.current_player = .White
 	case .White: g.current_player = .Black
