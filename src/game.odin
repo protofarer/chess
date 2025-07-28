@@ -25,9 +25,10 @@ WINDOW_H :: 900
 TICK_RATE :: 60
 
 BACKGROUND_COLOR :: rl.GRAY
-
 DARK_TILE_COLOR :: rl.LIGHTGRAY
 LIGHT_TILE_COLOR :: rl.WHITE
+
+BOARD_LENGTH :: 8
 
 PIECE_POINTS := [Piece_Type]i32{
 	.None = 0,
@@ -128,7 +129,7 @@ board_bounds :: Rec{
 	board_topleft_x, board_topleft_y, board_width, board_height
 }
 
-tile_size: f32 = f32(board_width) / 8
+tile_size: f32 = f32(board_width) / BOARD_LENGTH
 
 board_tile_pos_to_sprite_logical_render_pos :: proc(x, y: i32) -> Vec2 {
 	// origin is bottom left of board
@@ -144,10 +145,11 @@ draw :: proc() {
 	case Play_Scene:
 		rl.DrawRectangle(0, 0, LOGICAL_SCREEN_WIDTH, i32(topbar_height), rl.BLUE)
 
-		for y in 0..<8 {
-			for x in 0..< 8 {
+
+		for y in 0..<BOARD_LENGTH {
+			for x in 0..< BOARD_LENGTH {
 				color: rl.Color
-				if ((y*8) + x) % 2 == 0 {
+				if ((y*BOARD_LENGTH) + x) % 2 == 0 {
 					color = y % 2 == 1 ? LIGHT_TILE_COLOR :  DARK_TILE_COLOR
 				} else {
 					color = y % 2 == 1 ? DARK_TILE_COLOR : LIGHT_TILE_COLOR
@@ -236,9 +238,20 @@ draw :: proc() {
 	}
 
 	rl.BeginMode2D(ui_camera())
-	rl.DrawText(fmt.ctprintf("NEW GAME"), 5, 5, 8, rl.WHITE)
-	rl.DrawText(fmt.ctprintf("DRAW"), 100, 5, 8, rl.WHITE)
-	rl.DrawText(fmt.ctprintf("TIME"), 200, 5, 8, rl.WHITE)
+	rl.DrawText(fmt.ctprintf("NEW GAME_butt"), 5, 5, 8, rl.WHITE)
+
+	rl.DrawText(fmt.ctprintf("DRAW_butt"), 100, 5, 8, rl.WHITE)
+
+	// TODO: update time in update frame
+	get_time_display_string ::proc() -> cstring {
+		// set/get Duration since game start: time.since(game_start_time)
+		// get h,m,s: time.clock_from_duration
+		// get days: time.duration_hours(total_time) / 24, floor
+		// format string
+	}
+	time_string := fmt.ctprintf("TIME: %v", get_time_display_string())
+
+	rl.DrawText(time_string, 200, 5, 8, rl.WHITE)
 	rl.DrawText(fmt.ctprintf("EXIT"), 300, 5, 8, rl.WHITE)
 	rl.EndMode2D()
 
@@ -435,30 +448,34 @@ EMPTY_TILE :: Tile{piece_type = .None}
 process_play_input :: proc(s: ^Play_Scene) {
 	// actions: bit_set[Play_Action]
 
+	// First, position and existence changes are made: move, capture, special move initiation
+	// Second, "Subsequent state resolution": promotion, followup submoves (castling), check, 
+
 	for action_ in Play_Action {
 		action_switch: switch action_ {
 		case .Left_Click_Board:
 			if mouse_condition := is_mouse_over_board() && rl.IsMouseButtonPressed(.LEFT); !mouse_condition {
 				break
 			}
-
 			pr("Detected Left Click Board")
+
 			mouse_tile_pos := get_tile_position_from_mouse_already_over_board()
 
 			// if friendly piece, toggle select piece
 			clicked_tile, _ := get_tile_by_position(mouse_tile_pos)
 			if clicked_tile.piece_type != .None && clicked_tile.piece_color == g.current_player {
+				pr("GET IN HERE")
 				// if clicked tile pos corresponds to current selected piece
-				if val := g.selected_piece; val != nil && mouse_tile_pos == g.selected_piece.?.position{
+				if selected_piece, ok := g.selected_piece.?; ok && mouse_tile_pos == selected_piece.position {
 					g.selected_piece = nil
 					pr("Action: DeSelect_Piece")
 				} else {
-					selected_piece := Selected_Piece_Data{
+					new_selected_piece := Selected_Piece_Data{
 						position = mouse_tile_pos,
 						tile = clicked_tile,
 						possible_moves = get_possible_moves(mouse_tile_pos),
 					}
-					g.selected_piece = selected_piece
+					g.selected_piece = new_selected_piece
 					pr("Action: Select_Piece")
 				}
 				break
@@ -468,8 +485,8 @@ process_play_input :: proc(s: ^Play_Scene) {
 			if g.selected_piece != nil {
 				selected_piece := g.selected_piece.?
 
-				is_possible_move: bool
 				// A. If it is a possible move, do it
+				is_possible_move: bool
 				for move_result in sa.slice(&selected_piece.possible_moves) {
 					if mouse_tile_pos == move_result.position {
 						is_possible_move = true
@@ -498,7 +515,7 @@ process_play_input :: proc(s: ^Play_Scene) {
 							end_turn()
 
 						case .En_Passant:
-							// Captured piece in special position
+							// Captured piece is in en passant capture position
 							pr("EN PASSANT")
 							selected_piece_tile := selected_piece.tile
 
@@ -521,12 +538,10 @@ process_play_input :: proc(s: ^Play_Scene) {
 							set_tile(new_pos, new_tile)
 
 							update_points(g.current_player, captured_tile.piece_type)
-
 							end_turn()
 
 						case .Capture:
-							// Captured piece in new position
-							// Update the selected piece and store in new position
+							// Captured piece is in selected piece's new position
 							pr("CAPTURE")
 							selected_piece_tile := selected_piece.tile
 
@@ -546,6 +561,7 @@ process_play_input :: proc(s: ^Play_Scene) {
 							new_tile.has_piece_moved = true
 							set_tile(new_pos, new_tile)
 
+							update_points(g.current_player, captured_tile.piece_type)
 							end_turn()
 
 						case .Kingside_Castle:
@@ -680,7 +696,7 @@ Piece_Color :: enum u8 {
 // corresponds to [a-h][1-8]
 // contains board-specific gameplay state
 Board :: struct {
-	tiles: [8][8]Tile,
+	tiles: [BOARD_LENGTH][BOARD_LENGTH]Tile,
 	n_turns: i32,
 	current_player: Player_Color,
 
@@ -694,23 +710,27 @@ Board :: struct {
 	points: [Player_Color]i32
 }
 
+is_in_bounds :: proc(x,y: i32) -> bool {
+	return !(x < 0 || x > 7 || y < 0 || y > 7)
+}
+
 // Also tests for board boundary
 get_tile_by_position :: proc(pos: Position) -> (tile: Tile, in_bounds: bool) {
-	if pos.x < 0 || pos.x > 7 || pos.y < 0 || pos.y > 7 {
+	if !is_in_bounds(pos.x, pos.y){
 		return {}, false
 	}
 	return g.board.tiles[pos.y][pos.x], true
 }
 
 init_board :: proc() -> Board {
-	positions_with_pieces := [8][8]Piece_Type{
+	positions_with_pieces := [BOARD_LENGTH][BOARD_LENGTH]Piece_Type{
 		{.Rook, .Knight, .Bishop, .Queen, .King, .Bishop, .Knight, .Rook},
 		{.Pawn,.Pawn,.Pawn,.Pawn,.Pawn,.Pawn,.Pawn,.Pawn,},
 		{}, {}, {}, {},
 		{.Pawn,.Pawn,.Pawn,.Pawn,.Pawn,.Pawn,.Pawn,.Pawn,},
 		{.Rook, .Knight, .Bishop, .Queen, .King, .Bishop, .Knight, .Rook},
 	}
-	tiles: [8][8]Tile
+	tiles: [BOARD_LENGTH][BOARD_LENGTH]Tile
 	for row, y in positions_with_pieces {
 		for piece_type, x in row {
 			tiles[y][x] = {
@@ -741,18 +761,27 @@ Piece_Action :: enum u8 {
 MAX_ELEMENTS_FOR_MOVE_RESULTS :: 64
 Move_Results :: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Move_Result)
 
+DIAGONAL_DIRECTIONS :: [4]Vec2i{
+	{1,1},{1,-1},{-1,-1},{-1,1},
+}
+CARDINAL_DIRECTIONS :: [4]Vec2i{
+	{0,1},{1,0},{0,-1},{-1,0},
+}
+ALL_DIRECTIONS :: [8]Vec2i{
+	{1,1},{1,-1},{-1,-1},{-1,1},
+	{0,1},{1,0},{0,-1},{-1,0},
+}
 get_possible_moves :: proc(pos: Position) -> Move_Results {
 	tile, _ := get_tile_by_position(pos)
-	// TODO: special moves
 	// NB: moves beyond captures or beyond board
-	// assume white bottom unless false
-	// Either check landing spots (knight) or cast a ray (stop at collision)
+	// assume standard board orientation, white bottom unless g.is_white_bottom false
 
-	color_and_side_factor: i32 = tile.piece_color == .White ? 1 : -1
-	color_and_side_factor *= g.is_white_bottom ? 1 : -1
+	// aka color and side factor
+	flip_factor: i32 = tile.piece_color == .White ? 1 : -1
+	flip_factor *= g.is_white_bottom ? 1 : -1
 
 	arr: Move_Results
-	#partial switch tile.piece_type {
+	#partial top_switch: switch tile.piece_type {
 	case .Pawn:
 		// CASE pawn en passants, forced move: if possible then this is player's only move
 		// TODO: refactor this to precede selection/move logic (for now keep here for testing)
@@ -776,11 +805,11 @@ get_possible_moves :: proc(pos: Position) -> Move_Results {
 			capture_offset_y: i32 = g.board.current_player == .White ? 1 : -1
 			capture_position.y += capture_offset_y
 			sa.push(&arr, Move_Result{position = capture_position, piece_action = .En_Passant})
-			return arr
+			break top_switch
 		}
 
 		// CASE pawn basic move
-		move_direction := Position{0,1} * color_and_side_factor
+		move_direction := Position{0,1} * flip_factor
 
 		// cast ray of length 1 for basic move
 		pos_0 := pos + move_direction
@@ -797,17 +826,123 @@ get_possible_moves :: proc(pos: Position) -> Move_Results {
 		}
 
 		// CASE pawn captures
-		// TODO: redo capture logic, only do the move if it's enemy
-		capture_position_right_1 := pos + Position{1,1} * color_and_side_factor
+		capture_position_right_1 := pos + Position{1,1} * flip_factor
 		tile_cap_right_1, _ := get_tile_by_position(capture_position_right_1)
 		if tile_cap_right_1.piece_type != .None && tile_cap_right_1.piece_color != g.current_player {
 			sa.push(&arr, Move_Result{position = capture_position_right_1, piece_action = .Capture})
 		}
 
-		capture_position_left_1 := pos + Position{-1,1} * color_and_side_factor
+		capture_position_left_1 := pos + Position{-1,1} * flip_factor
 		tile_cap_left_1, _ := get_tile_by_position(capture_position_left_1)
 		if tile_cap_left_1.piece_type != .None && tile_cap_left_1.piece_color != g.current_player {
 			sa.push(&arr, Move_Result{position = capture_position_left_1, piece_action = .Capture})
+		}
+		return arr
+
+	case .Knight:
+		// CASE knight basic move
+		relative_move_positions := [?]Position{
+			{-1,  2},
+			{ 1,  2},
+			{ 2,  1},
+			{ 2, -1},
+			{ 1, -2},
+			{-1, -2},
+			{-2,  1},
+			{-2, -1},
+		}
+		for rel_pos in relative_move_positions {
+			target_pos := pos + rel_pos * flip_factor
+			if target_tile, in_bounds := get_tile_by_position(target_pos); in_bounds {
+				if target_tile.piece_type == .None {
+					sa.push(&arr, Move_Result{position = target_pos, piece_action = .Travel})
+				} else {
+					if target_tile.piece_color != g.current_player {
+						sa.push(&arr, Move_Result{position = target_pos, piece_action = .Capture})
+					}
+				}
+			} 
+		}
+
+	case .Bishop:
+		move_directions := DIAGONAL_DIRECTIONS
+		for dir in move_directions {
+			bishop_ray: for i in 1..<BOARD_LENGTH {
+				// cast ray until: hit piece or out of bounds
+				target_pos := pos + (dir * i32(i)) * flip_factor
+				target_tile, in_bounds := get_tile_by_position(target_pos)
+				if !in_bounds {
+					break bishop_ray
+				}
+				if target_tile.piece_type == .None {
+					sa.push(&arr, Move_Result{position = target_pos, piece_action = .Travel})
+				} else {
+					if target_tile.piece_color != g.current_player {
+						sa.push(&arr, Move_Result{position = target_pos, piece_action = .Capture})
+						break bishop_ray
+					}
+				}
+			}
+		}
+
+	case .Rook:
+		move_directions := CARDINAL_DIRECTIONS
+		for dir in move_directions {
+			rook_ray: for i in 1..<BOARD_LENGTH {
+				// cast ray until: hit piece or out of bounds
+				target_pos := pos + (dir * i32(i)) * flip_factor
+				target_tile, in_bounds := get_tile_by_position(target_pos)
+				if !in_bounds {
+					break rook_ray
+				}
+				if target_tile.piece_type == .None {
+					sa.push(&arr, Move_Result{position = target_pos, piece_action = .Travel})
+				} else {
+					if target_tile.piece_color != g.current_player {
+						sa.push(&arr, Move_Result{position = target_pos, piece_action = .Capture})
+						break rook_ray
+					}
+				}
+			}
+		}
+	
+	case .Queen:
+		move_directions := ALL_DIRECTIONS
+		for dir in move_directions {
+			queen_ray: for i in 1..<BOARD_LENGTH {
+				// cast ray until: hit piece or out of bounds
+				target_pos := pos + (dir * i32(i)) * flip_factor
+				target_tile, in_bounds := get_tile_by_position(target_pos)
+				if !in_bounds {
+					break queen_ray
+				}
+				if target_tile.piece_type == .None {
+					sa.push(&arr, Move_Result{position = target_pos, piece_action = .Travel})
+				} else {
+					if target_tile.piece_color != g.current_player {
+						sa.push(&arr, Move_Result{position = target_pos, piece_action = .Capture})
+						break queen_ray
+					}
+				}
+			}
+		}
+	case .King:
+		move_directions := ALL_DIRECTIONS
+		for dir in move_directions {
+			// cast ray until: hit piece or out of bounds
+			target_pos := pos + dir * flip_factor
+			target_tile, in_bounds := get_tile_by_position(target_pos)
+			if !in_bounds {
+				continue
+			}
+			if target_tile.piece_type == .None {
+				sa.push(&arr, Move_Result{position = target_pos, piece_action = .Travel})
+			} else {
+				if target_tile.piece_color != g.current_player {
+					sa.push(&arr, Move_Result{position = target_pos, piece_action = .Capture})
+					continue
+				}
+			}
 		}
 
 	}
