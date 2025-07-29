@@ -50,6 +50,26 @@ Game_Memory :: struct {
 	},
 }
 
+MAX_SMALL_ARRAY_CAPTURE_COUNT :: 16
+// corresponds to [a-h][1-8]
+// contains board-specific gameplay state
+Board :: struct {
+	tiles: [BOARD_LENGTH][BOARD_LENGTH]Tile,
+	n_turns: i32,
+	current_player: Player_Color,
+	is_white_bottom: bool, // predom for multiplayer
+
+	selected_piece: Maybe(Selected_Piece_Data),
+
+	last_double_move_end_position: Position,
+	last_double_move_turn: i32,
+
+	is_white_king_checked: bool,
+	is_black_king_checked: bool,
+	captures: [Player_Color]sa.Small_Array(MAX_SMALL_ARRAY_CAPTURE_COUNT, Piece_Type),
+	points: [Player_Color]i32
+}
+
 App_State :: enum {
 	Running,
 	Exit
@@ -89,25 +109,6 @@ Piece_Color :: enum u8 {
 	White, Black,
 }
 
-// corresponds to [a-h][1-8]
-// contains board-specific gameplay state
-Board :: struct {
-	tiles: [BOARD_LENGTH][BOARD_LENGTH]Tile,
-	n_turns: i32,
-	current_player: Player_Color,
-	is_white_bottom: bool, // predom for multiplayer
-
-	selected_piece: Maybe(Selected_Piece_Data),
-
-	last_double_move_end_position: Position,
-	last_double_move_turn: i32,
-
-	is_white_king_checked: bool,
-	is_black_king_checked: bool,
-	white_captures: sa.Small_Array(15, Piece_Type),
-	black_captures: sa.Small_Array(15, Piece_Type),
-	points: [Player_Color]i32
-}
 
 Player_Color :: Piece_Color
 
@@ -154,6 +155,11 @@ setup :: proc() {
 		render_texture = rl.LoadRenderTexture(LOGICAL_SCREEN_WIDTH * RENDER_TEXTURE_SCALE, LOGICAL_SCREEN_HEIGHT * RENDER_TEXTURE_SCALE),
 		// audman = audman,
 	}
+
+	offx, offy := get_viewport_offset()
+	scale := get_viewport_scale()
+	rl.SetMouseOffset(i32(offx), i32(offy))
+	rl.SetMouseScale(1/scale, 1/scale)
 }
 
 // clear collections, set initial values, Game_Memory already "setup"
@@ -164,8 +170,9 @@ init :: proc() {
 	g.is_music_enabled = true
 
 	g.board = init_board()
+	game_start := time.time_add(time.now(), -55555*time.Hour - 33* time.Minute - 25 * time.Second)
 	g.time = {
-		game_start = time.now(),
+		game_start = game_start,
 		game_running = 0,
 		players_running = {},
 		turn_start = time.now(),
@@ -175,6 +182,18 @@ init :: proc() {
 	// TODO: depends on roll. In local play (same machine) Player White is always bot.
 	g.is_white_bottom = true
 	// play_music(.Music, true)
+	sa.push(&g.board.captures[.White],
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+	)
+	sa.push(&g.board.captures[.Black],
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+	)
 }
 
 update :: proc() {
@@ -197,11 +216,28 @@ update :: proc() {
 
 TOPBAR_HEIGHT :: 24
 BOARD_RENDER_LENGTH: f32 : f32(LOGICAL_SCREEN_HEIGHT) - f32(TOPBAR_HEIGHT)
-board_bounds :: Rec{
-	f32(LOGICAL_SCREEN_WIDTH * (f32(1) - f32(0.66))) / 2, 
+
+BOARD_BOUNDS :: Rec{
+	(LOGICAL_SCREEN_WIDTH - BOARD_RENDER_LENGTH) / 2,
 	TOPBAR_HEIGHT,
 	BOARD_RENDER_LENGTH,
 	BOARD_RENDER_LENGTH,
+}
+
+PANEL_Y :: TOPBAR_HEIGHT
+PANEL_WIDTH :: BOARD_BOUNDS.x - 1
+PANEL_HEIGHT :: BOARD_RENDER_LENGTH
+LEFT_PANEL_BOUNDS :: Rec{
+	0,
+	PANEL_Y,
+	PANEL_WIDTH,
+	PANEL_HEIGHT,
+}
+RIGHT_PANEL_BOUNDS :: Rec{
+	BOARD_BOUNDS.x + BOARD_RENDER_LENGTH + 1,
+	PANEL_Y,
+	PANEL_WIDTH,
+	PANEL_HEIGHT,
 }
 
 TILE_SIZE: f32 = BOARD_RENDER_LENGTH / BOARD_LENGTH
@@ -220,38 +256,14 @@ draw :: proc() {
 				} else {
 					color = y % 2 == 1 ? DARK_TILE_COLOR : LIGHT_TILE_COLOR
 				}
-				rl.DrawRectangle(i32(math.round(board_bounds.x + f32(x) * TILE_SIZE)), i32(math.round(board_bounds.y + f32(y) * TILE_SIZE)), i32(math.round(TILE_SIZE)), i32(math.round(TILE_SIZE)), color)
+				rl.DrawRectangle(i32(math.round(BOARD_BOUNDS.x + f32(x) * TILE_SIZE)), i32(math.round(BOARD_BOUNDS.y + f32(y) * TILE_SIZE)), i32(math.round(TILE_SIZE)), i32(math.round(TILE_SIZE)), color)
 			}
 		}
 
 		// Draw pieces
 		for row, y in g.board.tiles {
 			for tile, x in row {
-				text: cstring
-				color := tile.piece_color == .White ? rl.BEIGE : rl.BROWN
-				switch tile.piece_type {
-				case .Rook:
-					text = fmt.ctprintf("R")
-				case .Knight:
-					text = fmt.ctprintf("K")
-				case .Bishop:
-					text = fmt.ctprintf("B")
-				case .Queen:
-					text = fmt.ctprintf("Q")
-				case .King:
-					text = fmt.ctprintf("K")
-				case .Pawn:
-					text = fmt.ctprintf("P")
-				case .None:
-				}
-				render_pos := board_tile_pos_to_sprite_logical_render_pos(i32(x), i32(y))
-				tile_render_pos_x := i32(math.round(render_pos.x))
-				tile_render_pos_y := i32(math.round(render_pos.y))
-				rl.DrawText(text, tile_render_pos_x, tile_render_pos_y, 28, color)
-
-				if g.debug {
-					rl.DrawRectangle(i32(tile_render_pos_x), i32(tile_render_pos_y), 1, 1, rl.RED)
-				}
+				draw_piece_on_board(tile.piece_type, tile.piece_color, {i32(x),i32(y)})
 			}
 		}
 
@@ -269,34 +281,38 @@ draw :: proc() {
 			}
 		}
 
+		// Debug text
 		if g.debug {
 			// draw tile borders via grid
 			for y in 0..<9 {
 				rl.DrawLine(
-					i32(math.floor(board_bounds.x + 0)), 
-					i32(board_bounds.y + f32(y) * TILE_SIZE), 
-					i32(math.floor(board_bounds.x + board_bounds.width)), // for error: cannot be rep w/o truncate/round as type i32
-					i32(board_bounds.y + f32(y) * TILE_SIZE), 
+					i32(math.floor(BOARD_BOUNDS.x + 0)), 
+					i32(BOARD_BOUNDS.y + f32(y) * TILE_SIZE), 
+					i32(math.floor(BOARD_BOUNDS.x + BOARD_BOUNDS.width)), // for error: cannot be rep w/o truncate/round as type i32
+					i32(BOARD_BOUNDS.y + f32(y) * TILE_SIZE), 
 					rl.BLUE,
 				)
 			}
 			for x in 0..<9 {
 				rl.DrawLine(
-					i32(board_bounds.x + f32(x) * TILE_SIZE), 
-					i32(board_bounds.y + 0), 
-					i32(board_bounds.x + f32(x) * TILE_SIZE), 
-					i32(board_bounds.y + board_bounds.height), 
+					i32(BOARD_BOUNDS.x + f32(x) * TILE_SIZE), 
+					i32(BOARD_BOUNDS.y + 0), 
+					i32(BOARD_BOUNDS.x + f32(x) * TILE_SIZE), 
+					i32(BOARD_BOUNDS.y + BOARD_BOUNDS.height), 
 					rl.BLUE,
 				)
 			}
 
 			// indicate center of viewport
-			rl.DrawRectangle(LOGICAL_SCREEN_WIDTH/2, LOGICAL_SCREEN_HEIGHT/2, 3, 3, rl.ORANGE)
+			xc :i32= LOGICAL_SCREEN_WIDTH/2
+			yc :i32= LOGICAL_SCREEN_HEIGHT/2
+			rl.DrawLine(xc - 2, yc, xc + 2, yc, rl.ORANGE)
+			rl.DrawLine(xc, yc - 2, xc, yc + 2, rl.ORANGE)
 			rl.DrawRectangleLines(
-				i32((math.round(board_bounds.x))),
-				i32(math.round(board_bounds.y)),
-				i32(math.round(board_bounds.width)),
-				i32(math.round(board_bounds.height)),
+				i32((math.round(BOARD_BOUNDS.x-1))),
+				i32(math.round(BOARD_BOUNDS.y-1)),
+				i32(math.round(BOARD_BOUNDS.width+2)),
+				i32(math.round(BOARD_BOUNDS.height+2)),
 				rl.GREEN,
 			)
 		}
@@ -307,17 +323,126 @@ draw :: proc() {
 	}
 
 	rl.BeginMode2D(ui_camera())
-		rl.GuiStatusBar({0,0,LOGICAL_SCREEN_WIDTH, TOPBAR_HEIGHT}, "")
-		rl.GuiButton({5,3,70,15}, "New Game")
-		rl.GuiButton({100,3,70,15}, "Draw")
+		// Transform mouse for gui
+		// offx, offy := get_viewport_offset()
+		// scale := get_viewport_scale()
+		// rl.SetMouseOffset(i32(offx), i32(offy))
+		// rl.SetMouseScale(1/scale, 1/scale)
 
-		time_string := fmt.ctprintf("TIME: %v", get_running_time_display_string(g.time.game_running))
-		rl.DrawText(time_string, 200, 5, 8, rl.WHITE)
+		// Top Status Bar
+		{
+			rl.GuiStatusBar({0,0,LOGICAL_SCREEN_WIDTH, TOPBAR_HEIGHT}, "")
+			y :f32= 4
+			if rl.GuiButton({5,y,70,15}, "New Game") do pr("Click New Game")
+			if rl.GuiButton({100,y,70,15}, "Draw") do pr("Click Draw")
+			rl.DrawText(make_duration_display_string(g.time.game_running), 220, 7, 8, rl.WHITE)
+			if rl.GuiButton({450,y,70,15}, "Exit") do pr("Click Exit")
+		}
 
-		rl.GuiButton({450,3,70,15}, "Exit")
+		// White Panel (Left)
+		{
+			white_panel_bounds := LEFT_PANEL_BOUNDS
+			rl.GuiPanel(white_panel_bounds, nil)
+			x0 := white_panel_bounds.x
+			y0 := white_panel_bounds.y
+
+			x := x0 + 3
+			y := y0 + 3
+			rl.GuiLabel({x, y, white_panel_bounds.width, 10}, "White")
+
+			if g.current_player == .White {
+				y += 15
+				cstr := make_duration_display_string(g.time.turn_running)
+				rl.GuiLabel({x, y, 100, 10}, cstr)
+			}
+
+			// Show cap pieces from bottom up
+			xcap :i32= i32(x0 + 10)
+			ycap :i32= i32(white_panel_bounds.y + white_panel_bounds.height) - 30 * 9
+			for piece_type,i in sa.slice(&g.board.captures[.White]) {
+				if i % 8 == 0 && i > 0 {
+					 xcap += 40
+					 ycap -= 240
+				}
+				ycap += 30
+				draw_piece(piece_type, .Black, xcap,ycap)
+			}
+		}
+		
+		// Black Panel (Right)
+		{
+			black_panel_bounds := RIGHT_PANEL_BOUNDS
+			rl.GuiPanel(black_panel_bounds, nil)
+			x0 := black_panel_bounds.x
+			y0 := black_panel_bounds.y
+
+			x := x0 + 3
+			y := y0 + 3
+			rl.GuiLabel({x, y, black_panel_bounds.width, 10}, "black")
+
+			if g.current_player == .Black {
+				y += 15
+				cstr := make_duration_display_string(g.time.turn_running)
+				rl.GuiLabel({x, y, 100, 10}, cstr)
+			}
+
+			// Show cap pieces from bottom up
+			xcap :i32= i32(x0 + 10)
+			ycap :i32= i32(black_panel_bounds.y + black_panel_bounds.height) - 30 * 9
+			for piece_type,i in sa.slice(&g.board.captures[.Black]) {
+				if i % 8 == 0 && i > 0 {
+					 xcap += 40
+					 ycap -= 240
+				}
+				ycap += 30
+				draw_piece(piece_type, .White, xcap,ycap)
+			}
+		}
 	rl.EndMode2D()
 
 	end_letterbox_rendering()
+
+	// Debug overlay
+	debug_overlay_text_block :: proc(x,y: ^i32, slice_cstr: []cstring) {
+		gy: i32 = 20
+		for s in slice_cstr {
+			rl.DrawText(s, x^, y^, 20, rl.WHITE)
+			y^ += gy
+		}
+	}
+	if g.debug {
+		{
+			x: i32 = 5
+			y: i32 = 40
+			arr := [?]cstring{
+				fmt.ctprintf("game_running: %v", make_duration_display_string(g.time.game_running)),
+				fmt.ctprintf("turn start: %v", make_time_display_string(g.time.turn_start)),
+				fmt.ctprintf("turn running: %v", make_duration_display_string(g.time.turn_running)),
+				fmt.ctprintf("white running: %v", make_duration_display_string(g.time.players_running[.White])),
+				fmt.ctprintf("black running: %v", make_duration_display_string(g.time.players_running[.Black])),
+			}
+			debug_overlay_text_block(&x, &y, arr[:])
+
+			arr2 := [?]cstring{
+				fmt.ctprintf("mouse_pos: %v", rl.GetMousePosition()),
+				fmt.ctprintf("mouse_tile_pos: %v", get_tile_position_from_mouse_already_over_board()),
+			}
+			y += 40
+			debug_overlay_text_block(&x, &y, arr2[:])
+			// game start
+			// game running
+			// turn start
+			// turn running
+			// players running
+
+			// curr player
+			// points
+			// captures
+			// selected piece
+			// num turns
+		}
+	}
+	rl.EndDrawing()
 }
 
 @(export)
@@ -451,19 +576,8 @@ Play_Action :: enum {
 	Left_Click_Board,
 }
 
-// NB: do reverse, offset, then scale
-transform_screen_position_to_viewport_position :: proc(pos: Vec2) -> Vec2 {
-	offx, offy := get_viewport_offset()
-	scale := get_viewport_scale()
-	pos := pos
-	pos.x += offx
-	pos.y += offy
-	pos /= scale
-	return pos
-}
-
 is_mouse_over_board :: proc() -> bool {
-	return is_mouse_over_rect(board_bounds.x, board_bounds.y, board_bounds.width, board_bounds.height)
+	return is_mouse_over_rect(BOARD_BOUNDS.x, BOARD_BOUNDS.y, BOARD_BOUNDS.width, BOARD_BOUNDS.height)
 }
 
 EMPTY_TILE :: Tile{piece_type = .None}
@@ -486,7 +600,6 @@ process_play_input :: proc(s: ^Play_Scene) {
 			// if friendly piece, toggle select piece
 			clicked_tile, _ := get_tile_by_position(mouse_tile_pos)
 			if clicked_tile.piece_type != .None && clicked_tile.piece_color == g.current_player {
-				pr("GET IN HERE")
 				// if clicked tile pos corresponds to current selected piece
 				if selected_piece, ok := g.selected_piece.?; ok && mouse_tile_pos == selected_piece.position {
 					g.selected_piece = nil
@@ -548,11 +661,7 @@ process_play_input :: proc(s: ^Play_Scene) {
 
 							captured_position := g.last_double_move_end_position
 							captured_tile, _ := get_tile_by_position(captured_position)
-							if g.current_player == .White {
-								sa.push(&g.board.white_captures, captured_tile.piece_type)
-							} else {
-								sa.push(&g.board.black_captures, captured_tile.piece_type)
-							}
+							sa.push(&g.board.captures[g.current_player], captured_tile.piece_type)
 							set_tile(captured_position, EMPTY_TILE)
 
 							new_tile := selected_piece_tile
@@ -573,11 +682,7 @@ process_play_input :: proc(s: ^Play_Scene) {
 							new_pos := mouse_tile_pos
 
 							captured_tile, _ := get_tile_by_position(new_pos)
-							if g.current_player == .White {
-								sa.push(&g.board.white_captures, captured_tile.piece_type)
-							} else {
-								sa.push(&g.board.black_captures, captured_tile.piece_type)
-							}
+							sa.push(&g.board.captures[g.current_player], captured_tile.piece_type)
 
 							new_tile := selected_piece_tile
 							new_tile.has_piece_moved = true
@@ -621,22 +726,23 @@ draw_sprite :: proc(texture_id: Texture_ID, pos: Vec2, size: Vec2, rotation: f32
 	rl.DrawTexturePro(tex, src_rect, dst_rect, {}, rotation, tint)
 }
 
-get_running_time_display_string ::proc(d: time.Duration) -> cstring {
-	// set/get Duration since game start: time.since(game_start_time)
-	// get h,m,s: time.clock_from_duration
-	// get days: time.duration_hours(total_time) / 24, floor
-	// format string
-	now := time.now()
+make_time_display_string ::proc(t: time.Time) -> cstring {
 	buf: [64]u8
-	text := time.to_string_hms_12(now, buf[:])
-	cstr := strings.clone_to_cstring(text)
+	str := time.to_string_hms_12(t, buf[:])
+	cstr := strings.clone_to_cstring(str)
+	return cstr
+}
+
+make_duration_display_string ::proc(d: time.Duration) -> cstring {
+	h,m,s := time.clock_from_duration(d)
+	cstr := fmt.ctprintf("%dh %dm %ds", h,m,s)
 	return cstr
 }
 
 // get position of top left corner of tile in render (render logical) coords from game logical coords board tile pos
 board_tile_pos_to_sprite_logical_render_pos :: proc(x, y: i32) -> Vec2 {
 	// origin is bottom left of board
-	pos := Vec2{board_bounds.x + f32(x) * TILE_SIZE, board_bounds.y + board_bounds.height - f32(y+1) * TILE_SIZE}
+	pos := Vec2{BOARD_BOUNDS.x + f32(x) * TILE_SIZE, BOARD_BOUNDS.y + BOARD_BOUNDS.height - f32(y+1) * TILE_SIZE}
 	return pos
 }
 
@@ -684,7 +790,7 @@ end_letterbox_rendering :: proc() {
 	src := rl.Rectangle{0, 0, render_texture_width, -render_texture_height} // negative height flips texture
 	dst := rl.Rectangle{-offset_x, -offset_y, viewport_width, viewport_height}
 	rl.DrawTexturePro(g.render_texture.texture, src, dst, {}, 0, rl.WHITE)
-	rl.EndDrawing()
+	// rl.EndDrawing() // moved outside for debug overlay
 }
 
 get_viewport_scale :: proc() -> f32 {
@@ -958,8 +1064,8 @@ get_tile_position_from_mouse_already_over_board :: proc() -> Position {
 	mouse_pos := get_mouse_position()
 
 	// from tile coords origin (bot left board)
-	dx := math.round(mouse_pos.x - board_bounds.x)
-	dy := math.round(board_bounds.y + board_bounds.height - mouse_pos.y)
+	dx := math.round(mouse_pos.x - BOARD_BOUNDS.x)
+	dy := math.round(BOARD_BOUNDS.y + BOARD_BOUNDS.height - mouse_pos.y)
 
 	return {i32(math.floor(dx / TILE_SIZE)), i32(math.floor(dy / TILE_SIZE))}
 }
@@ -991,5 +1097,37 @@ should_game_over :: proc() -> bool {
 ui_camera :: proc() -> rl.Camera2D {
 	return {
 		zoom = RENDER_TEXTURE_SCALE,
+	}
+}
+
+draw_piece_on_board :: proc(piece_type: Piece_Type, piece_color: Piece_Color, tile_pos: Position) {
+	render_pos := board_tile_pos_to_sprite_logical_render_pos(tile_pos.x, tile_pos.y)
+	tile_render_pos_x := i32(math.round(render_pos.x))
+	tile_render_pos_y := i32(math.round(render_pos.y))
+	draw_piece(piece_type, piece_color, tile_render_pos_x, tile_render_pos_y)
+}
+
+draw_piece :: proc(piece_type: Piece_Type, piece_color: Piece_Color, x,y: i32) {
+	text: cstring
+	color := piece_color == .White ? rl.BEIGE : rl.BROWN
+	switch piece_type {
+	case .Rook:
+		text = fmt.ctprintf("R")
+	case .Knight:
+		text = fmt.ctprintf("K")
+	case .Bishop:
+		text = fmt.ctprintf("B")
+	case .Queen:
+		text = fmt.ctprintf("Q")
+	case .King:
+		text = fmt.ctprintf("K")
+	case .Pawn:
+		text = fmt.ctprintf("P")
+	case .None:
+	}
+	rl.DrawText(text, x, y, 28, color)
+
+	if g.debug {
+		rl.DrawRectangle(i32(x), i32(y), 1, 1, rl.RED)
 	}
 }

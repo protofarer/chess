@@ -29,7 +29,7 @@ is_set_fully_flagged :: proc(set: bit_set[$E]) -> bool {
 }
 
 get_mouse_position :: proc() -> Vec2 {
-	return transform_screen_position_to_viewport_position(rl.GetMousePosition())
+	return rl.GetMousePosition()
 }
 
 is_mouse_over_rect :: proc(x,y,w,h: f32) -> bool {
