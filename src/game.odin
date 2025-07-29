@@ -32,16 +32,6 @@ LIGHT_TILE_COLOR :: rl.WHITE
 
 BOARD_LENGTH :: 8
 
-PIECE_POINTS := [Piece_Type]i32{
-	.None = 0,
-	.Pawn = 1,
-	.Knight = 3,
-	.Bishop = 3,
-	.Rook = 5,
-	.Queen = 9,
-	.King = 0,
-}
-
 Game_Memory :: struct {
 	app_state: App_State,
 	debug: bool,
@@ -51,23 +41,13 @@ Game_Memory :: struct {
 	audman: Audio_Manager,
 	is_music_enabled: bool,
 	using board: Board,
-	selected_piece: Maybe(Selected_Piece_Data),
-	is_white_bottom: bool,
 	time: struct {
 		game_start: time.Time,
-		total: time.Duration,
-		players_total: [Player_Color]time.Duration,
+		game_running: time.Duration,
+		players_running: [Player_Color]time.Duration,
 		turn_start: time.Time,
 		turn_running: time.Duration,
 	},
-}
-
-Player_Color :: Piece_Color
-
-Selected_Piece_Data :: struct {
-	position: Position,
-	tile: Tile,
-	possible_moves: Move_Results,
 }
 
 App_State :: enum {
@@ -78,35 +58,123 @@ App_State :: enum {
 Scene :: union {
 	// Menu_Scene,
 	Play_Scene,
-	// Game_Over_Scene,
-	// Win_Scene,
+	// End_Game_Scene,
 }
 
 Play_Scene :: struct {
 	is_paused: bool,
 }
 
-should_game_over :: proc() -> bool {
-	return false
-}
-
-Entity :: struct {
-	pos: Position,
-	size: Vec2,
-	rotation: f32,
-	color: rl.Color,
-}
-
 Sprite :: struct {
 	texture_id: Texture_ID,
 }
 
+Piece_Type :: enum {
+	None,
+	Pawn,
+	Rook,
+	Knight,
+	Bishop,
+	Queen,
+	King,
+}
+
+Tile :: struct {
+	piece_type: Piece_Type,
+	piece_color: Piece_Color,
+	has_piece_moved: bool,
+}
+
+Piece_Color :: enum u8 {
+	White, Black,
+}
+
+// corresponds to [a-h][1-8]
+// contains board-specific gameplay state
+Board :: struct {
+	tiles: [BOARD_LENGTH][BOARD_LENGTH]Tile,
+	n_turns: i32,
+	current_player: Player_Color,
+	is_white_bottom: bool, // predom for multiplayer
+
+	selected_piece: Maybe(Selected_Piece_Data),
+
+	last_double_move_end_position: Position,
+	last_double_move_turn: i32,
+
+	is_white_king_checked: bool,
+	is_black_king_checked: bool,
+	white_captures: sa.Small_Array(15, Piece_Type),
+	black_captures: sa.Small_Array(15, Piece_Type),
+	points: [Player_Color]i32
+}
+
+Player_Color :: Piece_Color
+
+Selected_Piece_Data :: struct {
+	position: Position,
+	tile: Tile,
+	possible_moves: Move_Results,
+}
+
+PIECE_POINTS := [Piece_Type]i32{
+	.None = 0,
+	.Pawn = 1,
+	.Knight = 3,
+	.Bishop = 3,
+	.Rook = 5,
+	.Queen = 9,
+	.King = 0,
+}
+
 g: ^Game_Memory
 
-ui_camera :: proc() -> rl.Camera2D {
-	return {
-		zoom = RENDER_TEXTURE_SCALE,
+// Run once: allocate, set global variable immutable values
+setup :: proc() {
+	context.logger = log.create_console_logger(nil, {
+        // .Level,
+        // .Terminal_Color,
+        // .Short_File_Path,
+        // .Line,
+        // .Procedure,
+        .Time,
+	})
+
+	// rl.InitAudioDevice()
+	// audman := init_audio_manager()
+
+	resman := new(Resource_Manager)
+	setup_resource_manager(resman)
+	load_all_assets(resman)
+	rl.GuiLoadStyle("assets/style_amber.rgs")
+
+	g = new(Game_Memory)
+	g^ = Game_Memory {
+		resman = resman,
+		render_texture = rl.LoadRenderTexture(LOGICAL_SCREEN_WIDTH * RENDER_TEXTURE_SCALE, LOGICAL_SCREEN_HEIGHT * RENDER_TEXTURE_SCALE),
+		// audman = audman,
 	}
+}
+
+// clear collections, set initial values, Game_Memory already "setup"
+init :: proc() {
+	g.app_state = .Running
+	g.debug = false
+	g.scene = Play_Scene{}
+	g.is_music_enabled = true
+
+	g.board = init_board()
+	g.time = {
+		game_start = time.now(),
+		game_running = 0,
+		players_running = {},
+		turn_start = time.now(),
+		turn_running = 0
+	}
+
+	// TODO: depends on roll. In local play (same machine) Player White is always bot.
+	g.is_white_bottom = true
+	// play_music(.Music, true)
 }
 
 update :: proc() {
@@ -122,42 +190,28 @@ update :: proc() {
 				// next_scene = Game_Over_Scene{}
 			}
 		}
-		g.time.total = time.since(g.time.game_start)
+		g.time.game_running = time.since(g.time.game_start)
 		g.time.turn_running = time.since(g.time.turn_start)
-
-	case:
 	}
 }
 
-
-// TODO: rename, more descriptive, render_logical?
-topbar_height :: 20
-board_topleft_x: f32 : f32(LOGICAL_SCREEN_WIDTH * (f32(1) - f32(0.66))) / 2
-board_topleft_y: f32 : f32(topbar_height)
-board_width: f32 : f32(LOGICAL_SCREEN_HEIGHT) - f32(topbar_height)
-board_height: f32 : board_width
-
+TOPBAR_HEIGHT :: 24
+BOARD_RENDER_LENGTH: f32 : f32(LOGICAL_SCREEN_HEIGHT) - f32(TOPBAR_HEIGHT)
 board_bounds :: Rec{
-	board_topleft_x, board_topleft_y, board_width, board_height
+	f32(LOGICAL_SCREEN_WIDTH * (f32(1) - f32(0.66))) / 2, 
+	TOPBAR_HEIGHT,
+	BOARD_RENDER_LENGTH,
+	BOARD_RENDER_LENGTH,
 }
 
-tile_size: f32 = f32(board_width) / BOARD_LENGTH
-
-board_tile_pos_to_sprite_logical_render_pos :: proc(x, y: i32) -> Vec2 {
-	// origin is bottom left of board
-	pos := Vec2{board_bounds.x + f32(x) * tile_size, board_bounds.y + board_bounds.height - f32(y+1) * tile_size}
-	return pos
-}
-
+TILE_SIZE: f32 = BOARD_RENDER_LENGTH / BOARD_LENGTH
 
 draw :: proc() {
 	begin_letterbox_rendering()
 
 	switch &s in g.scene {
 	case Play_Scene:
-		rl.DrawRectangle(0, 0, LOGICAL_SCREEN_WIDTH, i32(topbar_height), rl.BLUE)
-
-
+		// Draw board checkered tiles
 		for y in 0..<BOARD_LENGTH {
 			for x in 0..< BOARD_LENGTH {
 				color: rl.Color
@@ -166,10 +220,11 @@ draw :: proc() {
 				} else {
 					color = y % 2 == 1 ? DARK_TILE_COLOR : LIGHT_TILE_COLOR
 				}
-				rl.DrawRectangle(i32(math.round(board_bounds.x + f32(x) * tile_size)), i32(math.round(board_bounds.y + f32(y) * tile_size)), i32(math.round(tile_size)), i32(math.round(tile_size)), color)
+				rl.DrawRectangle(i32(math.round(board_bounds.x + f32(x) * TILE_SIZE)), i32(math.round(board_bounds.y + f32(y) * TILE_SIZE)), i32(math.round(TILE_SIZE)), i32(math.round(TILE_SIZE)), color)
 			}
 		}
 
+		// Draw pieces
 		for row, y in g.board.tiles {
 			for tile, x in row {
 				text: cstring
@@ -189,59 +244,61 @@ draw :: proc() {
 					text = fmt.ctprintf("P")
 				case .None:
 				}
-				// get top left corner of tile in render (render logical) coords from game logical coords board tile pos
 				render_pos := board_tile_pos_to_sprite_logical_render_pos(i32(x), i32(y))
-				tile_render_pos := Vec2i{i32(math.round(render_pos.x)), i32(math.round(render_pos.y))}
-				rl.DrawText(text, tile_render_pos.x, tile_render_pos.y, 28, color)
+				tile_render_pos_x := i32(math.round(render_pos.x))
+				tile_render_pos_y := i32(math.round(render_pos.y))
+				rl.DrawText(text, tile_render_pos_x, tile_render_pos_y, 28, color)
 
 				if g.debug {
-					// top left of tile :: sprite container origin
-					rl.DrawRectangle(i32(tile_render_pos.x), i32(tile_render_pos.y), 1, 1, rl.RED)
+					rl.DrawRectangle(i32(tile_render_pos_x), i32(tile_render_pos_y), 1, 1, rl.RED)
 				}
 			}
 		}
 
-		// TODO: draw selected piece visuals: highlight piece, show moves, get moves (calc collisions, captures)
-		if g.selected_piece != nil {
-			selected_piece := g.selected_piece.?
+		if selected_piece, ok := g.selected_piece.?; ok {
 			selected_piece_tile_pos := selected_piece.position
 
-			// border tile for now
+			// Highlight selected piece
 			sprite_origin := board_tile_pos_to_sprite_logical_render_pos(selected_piece_tile_pos.x, selected_piece_tile_pos.y)
-			rl.DrawRectangleLinesEx({sprite_origin.x, sprite_origin.y, tile_size, tile_size}, 2, rl.GREEN)
+			rl.DrawRectangleLinesEx({sprite_origin.x, sprite_origin.y, TILE_SIZE, TILE_SIZE}, 2, rl.GREEN)
 
-			// draw possible moves
-			move_results := selected_piece.possible_moves
-			for move_result in sa.slice(&move_results) {
+			// Draw possible moves
+			for move_result in sa.slice(&selected_piece.possible_moves) {
 				move_origin := board_tile_pos_to_sprite_logical_render_pos(move_result.position.x, move_result.position.y)
-				rl.DrawRectangleLinesEx({move_origin.x, move_origin.y, tile_size, tile_size}, 2, rl.PURPLE)
+				rl.DrawRectangleLinesEx({move_origin.x, move_origin.y, TILE_SIZE, TILE_SIZE}, 2, rl.PURPLE)
 			}
 		}
 
 		if g.debug {
-			// tile "grid"
+			// draw tile borders via grid
 			for y in 0..<9 {
 				rl.DrawLine(
 					i32(math.floor(board_bounds.x + 0)), 
-					i32(board_bounds.y + f32(y) * tile_size), 
+					i32(board_bounds.y + f32(y) * TILE_SIZE), 
 					i32(math.floor(board_bounds.x + board_bounds.width)), // for error: cannot be rep w/o truncate/round as type i32
-					i32(board_bounds.y + f32(y) * tile_size), 
+					i32(board_bounds.y + f32(y) * TILE_SIZE), 
 					rl.BLUE,
 				)
 			}
 			for x in 0..<9 {
 				rl.DrawLine(
-					i32(board_bounds.x + f32(x) * tile_size), 
+					i32(board_bounds.x + f32(x) * TILE_SIZE), 
 					i32(board_bounds.y + 0), 
-					i32(board_bounds.x + f32(x) * tile_size), 
+					i32(board_bounds.x + f32(x) * TILE_SIZE), 
 					i32(board_bounds.y + board_bounds.height), 
 					rl.BLUE,
 				)
 			}
 
-			// draw debug center
+			// indicate center of viewport
 			rl.DrawRectangle(LOGICAL_SCREEN_WIDTH/2, LOGICAL_SCREEN_HEIGHT/2, 3, 3, rl.ORANGE)
-			rl.DrawRectangleLines(i32((math.round(board_bounds.x))), i32(math.round(board_bounds.y)), i32(math.round(board_bounds.width)), i32(math.round(board_bounds.height)), rl.GREEN)
+			rl.DrawRectangleLines(
+				i32((math.round(board_bounds.x))),
+				i32(math.round(board_bounds.y)),
+				i32(math.round(board_bounds.width)),
+				i32(math.round(board_bounds.height)),
+				rl.GREEN,
+			)
 		}
 		if s.is_paused {
 			rl.DrawRectangle(0, 0, 90, 90, {0, 0, 0, 180})
@@ -250,81 +307,17 @@ draw :: proc() {
 	}
 
 	rl.BeginMode2D(ui_camera())
-	rl.DrawText(fmt.ctprintf("NEW GAME_butt"), 5, 5, 8, rl.WHITE)
+		rl.GuiStatusBar({0,0,LOGICAL_SCREEN_WIDTH, TOPBAR_HEIGHT}, "")
+		rl.GuiButton({5,3,70,15}, "New Game")
+		rl.GuiButton({100,3,70,15}, "Draw")
 
-	rl.DrawText(fmt.ctprintf("DRAW_butt"), 100, 5, 8, rl.WHITE)
+		time_string := fmt.ctprintf("TIME: %v", get_running_time_display_string(g.time.game_running))
+		rl.DrawText(time_string, 200, 5, 8, rl.WHITE)
 
-	// TODO: update time in update frame
-	get_running_time_display_string ::proc(d: time.Duration) -> cstring {
-		// set/get Duration since game start: time.since(game_start_time)
-		// get h,m,s: time.clock_from_duration
-		// get days: time.duration_hours(total_time) / 24, floor
-		// format string
-		now := time.now()
-		buf: [64]u8
-		text := time.to_string_hms_12(now, buf[:])
-		cstr := strings.clone_to_cstring(text)
-		return cstr
-	}
-	time_string := fmt.ctprintf("TIME: %v", get_running_time_display_string(g.time.total))
-
-	rl.DrawText(time_string, 200, 5, 8, rl.WHITE)
-	rl.DrawText(fmt.ctprintf("EXIT"), 300, 5, 8, rl.WHITE)
+		rl.GuiButton({450,3,70,15}, "Exit")
 	rl.EndMode2D()
 
 	end_letterbox_rendering()
-}
- 
-// Run once: allocate, set global variable immutable values
-setup :: proc() {
-	context.logger = log.create_console_logger(nil, {
-        // .Level,
-        // .Terminal_Color,
-        // .Short_File_Path,
-        // .Line,
-        // .Procedure,
-        .Time,
-	})
-
-	rl.InitAudioDevice()
-	audman := init_audio_manager()
-
-	resman := new(Resource_Manager)
-	setup_resource_manager(resman)
-	load_all_assets(resman)
-
-	g = new(Game_Memory)
-	g^ = Game_Memory {
-		resman = resman,
-		audman = audman,
-		render_texture = rl.LoadRenderTexture(LOGICAL_SCREEN_WIDTH * RENDER_TEXTURE_SCALE, LOGICAL_SCREEN_HEIGHT * RENDER_TEXTURE_SCALE),
-	}
-}
-
-// clear collections, set initial values, Game_Memory already "setup"
-init :: proc() {
-	g.app_state = .Running
-	g.debug = false
-	g.scene = Play_Scene{}
-	g.is_music_enabled = true
-
-	g.board = init_board()
-	g.time = {
-		game_start = time.now(),
-		total = 0,
-		players_total = {},
-		turn_start = time.now(),
-		turn_running = 0
-	}
-	// time: struct {
-	// 	start: time.Time,
-	// 	total: time.Duration,
-	// 	players: [Player_Color]time.Duration,
-	// }
-
-	// TODO: depends on roll. In local play (same machine) Player A is always bot.
-	g.is_white_bottom = true
-	// play_music(.Music, true)
 }
 
 @(export)
@@ -628,15 +621,30 @@ draw_sprite :: proc(texture_id: Texture_ID, pos: Vec2, size: Vec2, rotation: f32
 	rl.DrawTexturePro(tex, src_rect, dst_rect, {}, rotation, tint)
 }
 
+get_running_time_display_string ::proc(d: time.Duration) -> cstring {
+	// set/get Duration since game start: time.since(game_start_time)
+	// get h,m,s: time.clock_from_duration
+	// get days: time.duration_hours(total_time) / 24, floor
+	// format string
+	now := time.now()
+	buf: [64]u8
+	text := time.to_string_hms_12(now, buf[:])
+	cstr := strings.clone_to_cstring(text)
+	return cstr
+}
+
+// get position of top left corner of tile in render (render logical) coords from game logical coords board tile pos
+board_tile_pos_to_sprite_logical_render_pos :: proc(x, y: i32) -> Vec2 {
+	// origin is bottom left of board
+	pos := Vec2{board_bounds.x + f32(x) * TILE_SIZE, board_bounds.y + board_bounds.height - f32(y+1) * TILE_SIZE}
+	return pos
+}
+
 aabb_intersects :: proc(a_x, a_y, a_w, a_h: f32, b_x, b_y, b_w, b_h: f32) -> bool {
     return !(a_x + a_w < b_x ||
            b_x + b_w < a_x ||
            a_y + a_h < b_y ||
            b_y + b_h < a_y)
-}
-
-circle_intersects:: proc(a_pos: Vec2, a_radius: f32, b_pos: Vec2, b_radius: f32) -> bool {
-	return linalg.length2(a_pos - b_pos) < (a_radius + b_radius) * (a_radius + b_radius)
 }
 
 toggle_music :: proc() {
@@ -702,43 +710,6 @@ get_viewport_offset :: proc() -> (f32,f32) {
 	return off_x, off_y
 }
 
-Piece_Type :: enum {
-	None,
-	Pawn,
-	Rook,
-	Knight,
-	Bishop,
-	Queen,
-	King,
-}
-
-Tile :: struct {
-	piece_type: Piece_Type,
-	piece_color: Piece_Color,
-	has_piece_moved: bool,
-}
-
-Piece_Color :: enum u8 {
-	White, Black,
-}
-
-// corresponds to [a-h][1-8]
-// contains board-specific gameplay state
-Board :: struct {
-	tiles: [BOARD_LENGTH][BOARD_LENGTH]Tile,
-	n_turns: i32,
-	current_player: Player_Color,
-
-	last_double_move_end_position: Position,
-	last_double_move_turn: i32,
-
-	is_white_king_checked: bool,
-	is_black_king_checked: bool,
-	white_captures: sa.Small_Array(15, Piece_Type),
-	black_captures: sa.Small_Array(15, Piece_Type),
-	points: [Player_Color]i32
-}
-
 is_in_bounds :: proc(x,y: i32) -> bool {
 	return !(x < 0 || x > 7 || y < 0 || y > 7)
 }
@@ -768,7 +739,7 @@ init_board :: proc() -> Board {
 			}
 		}
 	}
-	return {
+	return Board{
 		tiles = tiles,
 		n_turns = 1,
 		current_player = .White,
@@ -779,6 +750,7 @@ Move_Result :: struct {
 	position: Position,
 	piece_action: Piece_Action,
 }
+
 Piece_Action :: enum u8 {
 	None,
 	Travel,
@@ -787,19 +759,23 @@ Piece_Action :: enum u8 {
 	Queenside_Castle,
 	Kingside_Castle,
 }
+
 MAX_ELEMENTS_FOR_MOVE_RESULTS :: 64
 Move_Results :: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Move_Result)
 
 DIAGONAL_DIRECTIONS :: [4]Vec2i{
 	{1,1},{1,-1},{-1,-1},{-1,1},
 }
+
 CARDINAL_DIRECTIONS :: [4]Vec2i{
 	{0,1},{1,0},{0,-1},{-1,0},
 }
+
 ALL_DIRECTIONS :: [8]Vec2i{
 	{1,1},{1,-1},{-1,-1},{-1,1},
 	{0,1},{1,0},{0,-1},{-1,0},
 }
+
 get_possible_moves :: proc(pos: Position) -> Move_Results {
 	tile, _ := get_tile_by_position(pos)
 	// NB: moves beyond captures or beyond board
@@ -985,7 +961,7 @@ get_tile_position_from_mouse_already_over_board :: proc() -> Position {
 	dx := math.round(mouse_pos.x - board_bounds.x)
 	dy := math.round(board_bounds.y + board_bounds.height - mouse_pos.y)
 
-	return {i32(math.floor(dx / tile_size)), i32(math.floor(dy / tile_size))}
+	return {i32(math.floor(dx / TILE_SIZE)), i32(math.floor(dy / TILE_SIZE))}
 }
 
 set_tile :: proc(pos: Position, tile: Tile) {
@@ -995,7 +971,7 @@ set_tile :: proc(pos: Position, tile: Tile) {
 end_turn :: proc() {
 	g.selected_piece = nil
 	g.n_turns += 1
-	g.time.players_total[g.current_player] += g.time.turn_running
+	g.time.players_running[g.current_player] += g.time.turn_running
 	g.time.turn_running = 0
 	g.time.turn_start = time.now()
 	switch g.current_player {
@@ -1006,4 +982,14 @@ end_turn :: proc() {
 
 update_points :: proc(current_player: Player_Color, piece_type: Piece_Type) {
 	g.board.points[current_player] += PIECE_POINTS[piece_type]
+}
+
+should_game_over :: proc() -> bool {
+	return false
+}
+
+ui_camera :: proc() -> rl.Camera2D {
+	return {
+		zoom = RENDER_TEXTURE_SCALE,
+	}
 }
