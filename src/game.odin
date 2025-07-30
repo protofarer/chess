@@ -5,6 +5,8 @@ import "core:log"
 import "core:math/linalg"
 import "core:math"
 import "core:time"
+import "core:time/datetime"
+import "core:time/timezone"
 import "core:strings"
 import sa "core:container/small_array"
 import rl "vendor:raylib"
@@ -42,11 +44,14 @@ Game_Memory :: struct {
 	is_music_enabled: bool,
 	using board: Board,
 	time: struct {
-		game_start: time.Time,
-		game_running: time.Duration,
-		players_running: [Player_Color]time.Duration,
-		turn_start: time.Time,
-		turn_running: time.Duration,
+		local_region: ^datetime.TZ_Region,
+		game_start_datetime: datetime.DateTime,
+		game_end_datetime: datetime.DateTime,
+		game_start: time.Tick,
+		game_duration: time.Duration,
+		turn_start: time.Tick,
+		turn_duration: time.Duration,
+		players_duration: [Player_Color]time.Duration,
 	},
 }
 
@@ -170,14 +175,20 @@ init :: proc() {
 	g.is_music_enabled = true
 
 	g.board = init_board()
-	game_start := time.time_add(time.now(), -55555*time.Hour - 33* time.Minute - 25 * time.Second)
-	g.time = {
-		game_start = game_start,
-		game_running = 0,
-		players_running = {},
-		turn_start = time.now(),
-		turn_running = 0
+
+	 // name == "America/New York"
+	if local_region, ok_region := timezone.region_load("local"); ok_region {
+		g.time.local_region = local_region
+	} else {
+		log.warn("Failed to load local region for timezone")
 	}
+
+	g.time.game_start_datetime = get_datetime_now()
+	g.time.game_start = time.tick_now()
+	g.time.game_duration = 0
+	g.time.turn_start = time.tick_now()
+	g.time.turn_duration = 0
+	g.time.players_duration = {}
 
 	// TODO: depends on roll. In local play (same machine) Player White is always bot.
 	g.is_white_bottom = true
@@ -209,8 +220,8 @@ update :: proc() {
 				// next_scene = Game_Over_Scene{}
 			}
 		}
-		g.time.game_running = time.since(g.time.game_start)
-		g.time.turn_running = time.since(g.time.turn_start)
+		g.time.game_duration = time.tick_since(g.time.game_start)
+		g.time.turn_duration = time.tick_since(g.time.turn_start)
 	}
 }
 
@@ -335,7 +346,7 @@ draw :: proc() {
 			y :f32= 4
 			if rl.GuiButton({5,y,70,15}, "New Game") do pr("Click New Game")
 			if rl.GuiButton({100,y,70,15}, "Draw") do pr("Click Draw")
-			rl.DrawText(make_duration_display_string(g.time.game_running), 220, 7, 8, rl.WHITE)
+			rl.DrawText(make_duration_display_string(get_game_duration()), 220, 7, 8, rl.WHITE)
 			if rl.GuiButton({450,y,70,15}, "Exit") do pr("Click Exit")
 		}
 
@@ -352,7 +363,7 @@ draw :: proc() {
 
 			if g.current_player == .White {
 				y += 15
-				cstr := make_duration_display_string(g.time.turn_running)
+				cstr := make_duration_display_string(get_turn_duration())
 				rl.GuiLabel({x, y, 100, 10}, cstr)
 			}
 
@@ -382,7 +393,7 @@ draw :: proc() {
 
 			if g.current_player == .Black {
 				y += 15
-				cstr := make_duration_display_string(g.time.turn_running)
+				cstr := make_duration_display_string(get_turn_duration())
 				rl.GuiLabel({x, y, 100, 10}, cstr)
 			}
 
@@ -415,11 +426,12 @@ draw :: proc() {
 			x: i32 = 5
 			y: i32 = 40
 			arr := [?]cstring{
-				fmt.ctprintf("game_running: %v", make_duration_display_string(g.time.game_running)),
-				fmt.ctprintf("turn start: %v", make_time_display_string(g.time.turn_start)),
-				fmt.ctprintf("turn running: %v", make_duration_display_string(g.time.turn_running)),
-				fmt.ctprintf("white running: %v", make_duration_display_string(g.time.players_running[.White])),
-				fmt.ctprintf("black running: %v", make_duration_display_string(g.time.players_running[.Black])),
+				fmt.ctprintf("game_duration: %v", make_duration_display_string(get_game_duration())),
+				fmt.ctprintf("turn_duration: %v", make_duration_display_string(get_turn_duration())),
+				fmt.ctprintf("white running: %v", make_duration_display_string(g.time.players_duration[.White])),
+				fmt.ctprintf("black running: %v", make_duration_display_string(g.time.players_duration[.Black])),
+				fmt.ctprintf("game_start_datetime: %v", make_datetime_display_string(g.time.game_start_datetime)),
+				fmt.ctprintf("game_end_datetime: %v", make_datetime_display_string(g.time.game_end_datetime)),
 			}
 			debug_overlay_text_block(&x, &y, arr[:])
 
@@ -726,17 +738,18 @@ draw_sprite :: proc(texture_id: Texture_ID, pos: Vec2, size: Vec2, rotation: f32
 	rl.DrawTexturePro(tex, src_rect, dst_rect, {}, rotation, tint)
 }
 
-make_time_display_string ::proc(t: time.Time) -> cstring {
-	buf: [64]u8
-	str := time.to_string_hms_12(t, buf[:])
-	cstr := strings.clone_to_cstring(str)
-	return cstr
-}
-
-make_duration_display_string ::proc(d: time.Duration) -> cstring {
+make_duration_display_string :: proc(d: time.Duration) -> cstring {
 	h,m,s := time.clock_from_duration(d)
 	cstr := fmt.ctprintf("%dh %dm %ds", h,m,s)
 	return cstr
+}
+
+make_datetime_display_string :: proc(dt: datetime.DateTime) -> cstring {
+	if e := datetime.validate(dt); e != .None {
+		log.error("Failed datetime validation:", e)
+		return fmt.ctprint("Invalid date")
+	}
+	return fmt.ctprintf("%v %v, %v %v:%v:%v", get_month_by_seq(dt.month), dt.day, dt.year, dt.hour, dt.minute, dt.second)
 }
 
 // get position of top left corner of tile in render (render logical) coords from game logical coords board tile pos
@@ -1077,9 +1090,8 @@ set_tile :: proc(pos: Position, tile: Tile) {
 end_turn :: proc() {
 	g.selected_piece = nil
 	g.n_turns += 1
-	g.time.players_running[g.current_player] += g.time.turn_running
-	g.time.turn_running = 0
-	g.time.turn_start = time.now()
+	g.time.players_duration[g.current_player] += g.time.turn_duration
+	g.time.turn_start = time.tick_now()
 	switch g.current_player {
 	case .Black: g.current_player = .White
 	case .White: g.current_player = .Black
@@ -1130,4 +1142,29 @@ draw_piece :: proc(piece_type: Piece_Type, piece_color: Piece_Color, x,y: i32) {
 	if g.debug {
 		rl.DrawRectangle(i32(x), i32(y), 1, 1, rl.RED)
 	}
+}
+
+get_turn_duration :: proc() -> time.Duration {
+	return g.time.turn_duration
+}
+
+get_game_duration :: proc() -> time.Duration {
+	return g.time.game_duration
+}
+
+get_datetime_now :: proc() -> datetime.DateTime {
+	time_now := time.now()
+	dt, _ := time.time_to_datetime(time_now)
+	local_dt, ok := timezone.datetime_to_tz(dt, g.time.local_region) // handles nil region
+	return local_dt
+}
+
+MONTHS_SHORT_DISPLAY := [?]string{
+	"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+}
+
+// 1-based index
+get_month_by_seq :: proc(seq: i8) -> string {
+	// return MONTHS_SHORT_DISPLAY[seq]
+	return fmt.tprintf("%v", time.Month(seq))
 }
