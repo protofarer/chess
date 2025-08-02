@@ -74,8 +74,10 @@ Board :: struct {
 	is_black_king_checked: bool,
 	captures: [Player_Color]sa.Small_Array(MAX_SMALL_ARRAY_CAPTURE_COUNT, Piece_Type),
 	points: [Player_Color]i32,
-	is_check: Player_Color,
+
 	threatened_positions: sa.Small_Array(BOARD_LENGTH * BOARD_LENGTH, Move_Result),
+	is_check: bool,
+	message: cstring,
 }
 
 App_State :: enum {
@@ -219,6 +221,7 @@ update :: proc() {
 		action := process_play_input(&s)
 
 		proposed_move_result, is_move_proposed := propose_move(action)
+		if is_move_proposed do pr("IS MOVE PROPOSED", is_move_proposed)
 
 		if is_move_proposed {
 			move_result, is_legal := eval_move(proposed_move_result)
@@ -402,18 +405,24 @@ update_board :: proc(move_result: Move_Result) {
 }
 
 // All this does is flag check or checkmate
+// This is called at start of next player's turn
 eval_board :: proc() {
-	if is_current_king_threatened() {
-		g.board.is_check = g.current_player
+	pr("EVAL BOARD for player", g.current_player)
+	if is_king_threatened(g.current_player) {
+		pr("SET CHECK TRUE")
+		g.board.is_check = true
 	}
 }
 
-is_current_king_threatened :: proc() -> bool {
+is_king_threatened :: proc(player_color: Player_Color) -> bool {
 	// does any enemy piece threaten current king?
-	positions_threatened := get_threatened_positions(g.current_player)
-	king_pos := get_king_position(g.current_player)
+	positions_threatened := get_threatened_positions(player_color)
+	pr("N positions threatened", sa.len(positions_threatened))
+	king_pos := get_king_position(player_color)
 	for pos in sa.slice(&positions_threatened) {
+		pr("pos threated", pos)
 		if king_pos == pos {
+			pr("KING iS THREATENED YES")
 			return true
 		}
 	}
@@ -423,7 +432,7 @@ is_current_king_threatened :: proc() -> bool {
 get_king_position :: proc(player_color: Player_Color) -> Position {
 	for row, y in g.board.tiles {
 		for tile, x in row {
-			if tile.piece_type == .King {
+			if tile.piece_type == .King && tile.piece_color == player_color {
 				return Position{i32(x),i32(y)}
 			}
 		}
@@ -440,8 +449,9 @@ get_threatened_positions :: proc(player_being_threatened: Player_Color) -> (thre
 			captured_position := g.last_double_move_end_position
 			sa.push(&threatened_positions, captured_position)
 			return
+		} else if actual_possible_move.piece_action == .Capture {
+			sa.push(&threatened_positions, actual_possible_move.position)
 		}
-		sa.push(&threatened_positions, actual_possible_move.position)
 	}
 	return
 }
@@ -530,14 +540,18 @@ draw :: proc() {
 			selected_piece_tile_pos := selected_piece.position
 
 			// Highlight selected piece
-			sprite_origin := board_tile_pos_to_sprite_logical_render_pos(selected_piece_tile_pos.x, selected_piece_tile_pos.y)
-			rl.DrawRectangleLinesEx({sprite_origin.x, sprite_origin.y, TILE_SIZE, TILE_SIZE}, 2, rl.GREEN)
+			draw_tile_border(selected_piece_tile_pos, rl.GREEN)
 
 			// Draw possible moves
 			for move_result in sa.slice(&selected_piece.possible_moves) {
-				move_origin := board_tile_pos_to_sprite_logical_render_pos(move_result.position.x, move_result.position.y)
-				rl.DrawRectangleLinesEx({move_origin.x, move_origin.y, TILE_SIZE, TILE_SIZE}, 2, rl.PURPLE)
+				draw_tile_border(move_result.position, rl.PURPLE)
 			}
+		}
+
+		if g.board.is_check {
+			// Highlight king in check or checkmate
+			king_pos := get_king_position(g.current_player)
+			draw_tile_border(king_pos, rl.RED)
 		}
 
 		// Debug text
@@ -602,8 +616,8 @@ draw :: proc() {
 			}
 			// TODO: draw text g.board.message (mostly illegal moves)
 			// TODO: flash timer, then hold
-			message := fmt.ctprintf("Illegal move, king is checked.......")
-			rl.DrawText(message, 180, 27, 8, rl.RED)
+			g.board.message = fmt.ctprintf("Illegal move, king is checked.......")
+			rl.DrawText(g.board.message, 180, 27, 8, rl.RED)
 		}
 
 		// White Panel (Left)
@@ -1131,24 +1145,19 @@ get_possible_moves :: proc(pos: Position, player_color: Player_Color) -> Move_Re
 	case .Bishop:
 		move_directions := DIAGONAL_DIRECTIONS
 		for dir in move_directions {
-			pr("bishop move_dir:", dir)
 			// cast ray until: intersect piece or out of bounds
 			bishop_ray: for i in 1..<BOARD_LENGTH {
 				// TODO: dont need flip_factor for biship, rook, queen, king, since moves are symmetric?
 				target_pos := pos + (dir * i32(i))
 				target_tile, in_bounds := get_tile_by_position(target_pos)
-				pr("target_pos:",target_pos)
 				if !in_bounds || target_tile.piece_color == player_color {
-					pr("bishop ray break, !in_bounds || is_friendly, tile", target_tile)
 					break bishop_ray
 				}
 				if is_enemy_piece(target_tile, player_color) {
-					pr("bishop ray break, enemy piece, tile:", target_tile)
 					sa.push(&arr, Move_Result{position = target_pos, piece_action = .Capture})
 					break bishop_ray
 				}
 				// empty tile
-					pr("bishop ray continue, tile:", target_tile)
 				sa.push(&arr, Move_Result{position = target_pos, piece_action = .Travel})
 			}
 		}
@@ -1313,12 +1322,25 @@ is_enemy_piece :: proc(target_tile: Tile, current_player: Player_Color) -> bool 
 	return false
 }
 
-get_other_player_color :: proc(player_color: Player_Color) -> Player_Color {
-	if player_color == .White {
+get_other_player_color :: proc(player_color: Maybe(Player_Color)) -> Player_Color {
+	_player_color: Player_Color
+
+	if pc, ok := player_color.?; ok {
+		_player_color = pc
+	} else {
+		_player_color = g.current_player
+
+	}
+	if _player_color == .White {
 		return .Black
-	} else if player_color == .Black {
+	} else if _player_color == .Black {
 		return .White
 	} else {
 		return .None
 	}
+}
+
+draw_tile_border :: proc(tile_pos: Position, color: rl.Color) {
+	sprite_origin := board_tile_pos_to_sprite_logical_render_pos(tile_pos.x, tile_pos.y)
+	rl.DrawRectangleLinesEx({sprite_origin.x, sprite_origin.y, TILE_SIZE, TILE_SIZE}, 2, color)
 }
