@@ -43,7 +43,6 @@ Game_Memory :: struct {
 	scene: Scene,
 	audman: Audio_Manager,
 	is_music_enabled: bool,
-	gameover: bool,
 	using board: Board,
 	time: struct {
 		local_timezone: ^datetime.TZ_Region,
@@ -82,7 +81,7 @@ Board :: struct {
 	is_draw: bool,
 	draw_offered: [Player_Color]bool,
 
-	turn_state: Turn_State,
+	turn_step: Turn_Step,
 
 	has_board_evaluated_this_turn: bool,
 	can_kingside_castle: [Player_Color]bool,
@@ -90,7 +89,8 @@ Board :: struct {
 
 	threatened_positions: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Position),
 	legal_moves: Move_Results,
-	player_moves: Move_Results,
+	presented_player_moves: Move_Results,
+	gameover: bool,
 }
 
 Tiles :: [BOARD_LENGTH][BOARD_LENGTH]Tile
@@ -193,12 +193,27 @@ init :: proc() {
 	g.debug = false
 	g.scene = Play_Scene{}
 	g.is_music_enabled = true
+	// g.board = init_board()
 
+
+	// TEST BOARDS
 	// g.board = test_init_white_checked_board()
 	// g.board = test_init_trapped_king_board()
-	g.board = test_init_board_king_cannot_capture_check()
+	// g.board = test_init_board_king_cannot_capture_check()
+	g.board = test_init_board_king_threatening_ray()
 	// g.board = test_init_white_checkmated_board()
-	// g.board = init_board()
+	sa.push(&g.board.captures[.White],
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+	)
+	sa.push(&g.board.captures[.Black],
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+	)
 
 	 // name == "America/New York"
 	if local_timezone, ok_timezone := timezone.region_load("local"); ok_timezone {
@@ -214,25 +229,12 @@ init :: proc() {
 	g.time.turn_duration = 0
 	g.time.players_duration = {}
 
-	// TODO: depends on roll. In local play (same machine) Player White is always bot.
+	// In local play (same machine) Player White is always bot.
 	g.is_white_bottom = true
-	// play_music(.Music, true)
-	sa.push(&g.board.captures[.White],
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-	)
-	sa.push(&g.board.captures[.Black],
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-	)
 }
 
 // CSDR Turn_Step?
-Turn_State :: enum {
+Turn_Step :: enum {
 	Eval, // start here
 	Try_Move, // loop until legal move
 	End, // ends here
@@ -251,24 +253,24 @@ update :: proc() {
 		// TODO: eval_board first, thus informing what moves can be made.
 		// - should only call after a board update / move
 		// - stores all possible moves for current player, all threatened positions, check, checkmate
-		if g.board.turn_state == .Eval {
-			eval_board()
-			g.board.turn_state = .Try_Move
+		if g.board.turn_step == .Eval {
+			eval_board(&g.board)
+			g.board.turn_step = .Try_Move
 
-		} else if g.board.turn_state == .Try_Move {
+		} else if g.board.turn_step == .Try_Move {
 			action := process_play_input(&s)
 			proposed_move_result, is_move_proposed := propose_move(action)
 			if is_move_proposed {
-				move_result, is_legal := eval_move(proposed_move_result)
+				move_result, is_legal := eval_move(g.board, proposed_move_result)
 				if is_legal {
 					make_move(&g.board, move_result)
-					g.board.turn_state = .End
+					g.board.turn_step = .End
 				}
 			}
 
-		} else if g.board.turn_state == .End {
+		} else if g.board.turn_step == .End {
 			end_turn()
-			g.board.turn_state = .Eval
+			g.board.turn_step = .Eval
 		}
 
 		g.time.game_duration = time.tick_since(g.time.game_start)
@@ -276,20 +278,19 @@ update :: proc() {
 	}
 }
 
-eval_move :: proc(proposed_move_result: Move_Result) -> (move_result: Move_Result, is_legal: bool) {
+eval_move :: proc(original_board: Board, proposed_move_result: Move_Result) -> (move_result: Move_Result, is_legal: bool) {
+	proposed_board := original_board
+	make_move(&proposed_board, proposed_move_result)
+	eval_board(&proposed_board)
+
 	if proposed_move_result.move_piece_type == .King {
-		pr("EVAL KING MOVE, is", proposed_move_result.new_position, "threatened?")
-		// TODO: NEED TO TEST AGAINST NEW BOARD WITH PROPSOED MOVE
-		
-		proposed_board := g.board
-		make_move(&proposed_board, proposed_move_result)
 		if is_position_threatened(proposed_board, proposed_move_result.new_position, g.current_player) {
-			pr("ILLEGAL KING MOVE INTO CHECK")
 			is_legal = false
 			g.board.message = "Illegal move: cannot move into a check position"
 			return
 		}
 	}
+
 	// TODO: test for legality, if illegal emit message
 	// use get_actual_possible_moves_for_player, restricts moves:
 	// - check
@@ -444,7 +445,7 @@ make_move :: proc(board: ^Board, move_result: Move_Result) {
 		new_tile.has_piece_moved = true
 		set_tile(&board.tiles, new_pos, new_tile)
 
-		update_points(board, g.current_player, captured_tile.piece_type)
+		update_points(board, board.current_player, captured_tile.piece_type)
 
 	case .Kingside_Castle:
 		pr("KINGSIDE CASTLE")
@@ -457,36 +458,36 @@ make_move :: proc(board: ^Board, move_result: Move_Result) {
 
 // All this does is flag check or checkmate
 // This is called at start of next player's turn (right afte end_turn but before next frame)
-eval_board :: proc() {
+eval_board :: proc(board: ^Board) {
 	// Update board state for downstream logic
 
 	// Cache state ///////////////////////////////////////////////////////////////////////
 	// this is for moves to present to player, including illegal moves
 
-	// TODO: proc signatures explicit dependencies, more specific than board!
-	g.board.player_moves = get_moves_for_player(g.board, g.current_player)
-	g.board.threatened_positions = get_threatened_all_positions_for_player(g.board, g.current_player)
-	// legal moves has dependency on threatened_positions
-	g.board.legal_moves = get_legal_moves(g.board, g.current_player)
+	// CSDR inline
+	board.presented_player_moves = get_moves_to_present_to_player(board^, board.current_player)
+	board.threatened_positions = get_threatened_all_positions_for_player(board^, g.current_player)
+	board.legal_moves = get_legal_moves(g.current_player, sa.slice(&board.threatened_positions), sa.slice(&board.presented_player_moves))
 	/////////////////////////////////////////////////////////////////////////////////////
 
 	// Check and Checkmate
-	g.board.has_board_evaluated_this_turn = true
-	if is_king_threatened(g.board, g.current_player) {
-		g.board.is_check = true
 
-		if !can_king_move(g.board, g.current_player) {
-			g.board.is_checkmate = true
-			g.gameover = true
+	is_king_threatened := is_position_threatened(board^, get_king_position(board.current_player), board.current_player)
+	if is_king_threatened {
+		board.is_check = true
+
+		if !can_king_move(board^, board.current_player) {
+			board.is_checkmate = true
+			board.gameover = true
 		}
 	} else {
-		g.board.is_check = false
+		board.is_check = false
 	}
 
 	// Stalemate
-	if sa.len(g.board.legal_moves) == 0 {
-		g.board.is_draw = true
-		g.gameover = true
+	if sa.len(board.legal_moves) == 0 {
+		board.is_draw = true
+		board.gameover = true
 	}
 
 	// TODO: Draw
@@ -538,7 +539,7 @@ eval_board :: proc() {
 			WHITE_KING_POSITION.y,
 		}
 		queenside_blocked: bool
-		if tile_queenside, _ := get_tile_by_position(g.board.tiles, pos_queenside); tile_queenside != EMPTY_TILE {
+		if tile_queenside, _ := get_tile_by_position(board.tiles, pos_queenside); tile_queenside != EMPTY_TILE {
 			queenside_blocked = true
 		}
 
@@ -546,7 +547,7 @@ eval_board :: proc() {
 			WHITE_KING_POSITION.x - 2,
 			WHITE_KING_POSITION.y,
 		}
-		if tile_queenside2, _ := get_tile_by_position(g.board.tiles, pos_queenside2); tile_queenside2 != EMPTY_TILE {
+		if tile_queenside2, _ := get_tile_by_position(board.tiles, pos_queenside2); tile_queenside2 != EMPTY_TILE {
 			queenside_blocked = true
 		}
 
@@ -556,82 +557,58 @@ eval_board :: proc() {
 		queenside_threatened := false
 
 		if has_white_king_moved || has_white_queenside_rook_moved || queenside_blocked || queenside_threatened || g.is_check {
-			g.board.can_queenside_castle[pc] = false
+			board.can_queenside_castle[pc] = false
 		}
 
 		// Kingside
 
 		// get expected tile
 		has_white_kingside_rook_moved := false
-		white_kingside_rook_tile, _ := get_tile_by_position(g.board.tiles, WHITE_KINGSIDE_ROOK_POSITION)
+		white_kingside_rook_tile, _ := get_tile_by_position(board.tiles, WHITE_KINGSIDE_ROOK_POSITION)
 		if white_kingside_rook_tile.has_piece_moved {
 			has_white_kingside_rook_moved = true
 		}
 
 		if has_white_king_moved || has_white_kingside_rook_moved || g.is_check {
-			g.board.can_kingside_castle[pc] = false
+			board.can_kingside_castle[pc] = false
 		}
 	}
 }
 
-get_moves_for_player :: proc(board: Board, player_color: Player_Color) -> (actual_possible_moves: sa.Small_Array(BOARD_LENGTH * BOARD_LENGTH, Move_Result)) {
-	tile_positions: sa.Small_Array(16, Position)
-	for row, y in board.tiles {
-		for tile, x in row {
-			if tile.piece_type != .None && tile.piece_color == player_color {
-				sa.push(&tile_positions, Position{i32(x), i32(y)})
-			}
-		}
-	}
-
-	for pos in sa.slice(&tile_positions) {
-		possible_moves := get_blind_moves(board, pos, player_color)
+get_moves_to_present_to_player :: proc(board: Board, player_color: Player_Color) -> (presented_moves: sa.Small_Array(BOARD_LENGTH * BOARD_LENGTH, Move_Result)) {
+	piece_positions := get_piece_positions(board.tiles, player_color)
+	for piece_position in sa.slice(&piece_positions) {
+		possible_moves := get_blind_moves(board, piece_position, player_color)
 		for move in sa.slice(&possible_moves) {
 			// must be only move then
 			if move.piece_action == .En_Passant {
-				sa.clear(&actual_possible_moves)
-				sa.push(&actual_possible_moves, move)
+				sa.clear(&presented_moves)
+				sa.push(&presented_moves, move)
 				return
 			} else {
-				sa.push(&actual_possible_moves, move)
+				sa.push(&presented_moves, move)
 			}
 		}
 	}
 	return
 }
 
-// TODO: use player_moves dependency
-// TODO: change signature, don't use globals, be direct with board dependencies
-get_legal_moves :: proc(board: Board, player_color: Player_Color) -> (legal_moves: sa.Small_Array(BOARD_LENGTH * BOARD_LENGTH, Move_Result)) {
-	player_piece_positions: sa.Small_Array(16, Position)
-	for row, y in board.tiles {
-		for tile, x in row {
-			if tile.piece_type != .None && tile.piece_color == player_color {
-				sa.push(&player_piece_positions, Position{i32(x), i32(y)})
-			}
-		}
-	}
-
-	player_blind_moves: [dynamic]Move_Result
-	for player_piece_position in sa.slice(&player_piece_positions) {
-		blind_moves := get_blind_moves(board, player_piece_position, player_color)
-		piece, _ := get_tile_by_position(board.tiles, player_piece_position)
-		blind_loop: for blind_move in sa.slice(&blind_moves) {
-			// must be only move then
-			if blind_move.piece_action == .En_Passant {
-				sa.clear(&legal_moves)
-				sa.push(&legal_moves, blind_move)
-				return
-			} else {
-				if piece.piece_type == .King {
-					tps := board.threatened_positions
-					for threatened_pos in sa.slice(&tps) {
-						if blind_move.new_position == threatened_pos {
-							continue blind_loop
-						}
+get_legal_moves :: proc(player_color: Player_Color, threatened_positions: []Position, presented_player_moves: []Move_Result) -> (legal_moves: Move_Results) {
+	// This is similar to get_player_moves
+	outer_loop: for presented_move_result in presented_player_moves {
+		if presented_move_result.piece_action == .En_Passant {
+			// TODO: need to store multiple en passents (rare edge case)
+			sa.clear(&legal_moves)
+			sa.push(&legal_moves, presented_move_result)
+			return
+		} else {
+			if presented_move_result.move_piece_type == .King {
+				for threatened_pos in threatened_positions {
+					if presented_move_result.new_position == threatened_pos {
+						continue outer_loop
 					}
-					sa.push(&legal_moves, blind_move)
 				}
+				sa.push(&legal_moves, presented_move_result)
 			}
 		}
 	}
@@ -654,7 +631,7 @@ get_king_legal_moves :: proc(board: Board, player_color: Player_Color) -> (legal
 
 can_king_move :: proc(board: Board, player_color: Player_Color) -> bool {
 	blind_moves := get_blind_moves(g.board, get_king_position(player_color), player_color)
-	threatened_positions := g.board.threatened_positions
+	threatened_positions := board.threatened_positions
 	for blind_move in sa.slice(&blind_moves) {
 		is_move_threatened := false
 		for threatened_position in sa.slice(&threatened_positions) {
@@ -667,7 +644,6 @@ can_king_move :: proc(board: Board, player_color: Player_Color) -> bool {
 			return true
 		}
 	}
-	pr("UHOH KING CANNOT MOVE")
 	return false
 }
 
@@ -680,11 +656,6 @@ is_position_threatened :: proc(board: Board, tile_pos: Position, player_color: P
 		}
 	}
 	return false
-}
-
-is_king_threatened :: proc(board: Board, player_color: Player_Color) -> bool {
-	// does any enemy piece threaten current king?
-	return is_position_threatened(board, get_king_position(player_color), player_color)
 }
 
 get_king_position :: proc(player_color: Player_Color) -> Position {
@@ -712,7 +683,7 @@ get_king_piece :: proc(player_color: Player_Color) -> Tile {
 }
 
 get_threatened_piece_positions :: proc(player_being_threatened: Player_Color) -> (threatened_positions: sa.Small_Array(BOARD_LENGTH * BOARD_LENGTH, Position)) {
-	actual_possible_moves := get_moves_for_player(g.board, get_other_player_color(player_being_threatened))
+	actual_possible_moves := get_moves_to_present_to_player(g.board, get_other_player_color(player_being_threatened))
 	for actual_possible_move in sa.slice(&actual_possible_moves) {
 		if actual_possible_move.piece_action == .En_Passant {
 			captured_position := g.last_double_move_end_position
@@ -725,18 +696,22 @@ get_threatened_piece_positions :: proc(player_being_threatened: Player_Color) ->
 	return
 }
 
+get_piece_positions :: proc(tiles: Tiles, player_color: Player_Color) ->  (piece_positions: sa.Small_Array(16, Position)) {
+	for row, y in tiles {
+		for tile, x in row {
+			if tile.piece_type != .None && tile.piece_color == player_color {
+				sa.push(&piece_positions, Position{i32(x), i32(y)})
+			}
+		}
+	}
+	return
+}
+
 get_threatened_all_positions_for_player :: proc(board: Board, player_being_threatened: Player_Color) -> (threatened_positions: sa.Small_Array(BOARD_LENGTH * BOARD_LENGTH, Position)) {
 	// Cant use blind moves... it doesnt take into account all threatened positions
 
 	threatening_player := get_other_player_color(player_being_threatened)
-	enemy_piece_positions: sa.Small_Array(16, Position)
-	for row, y in board.tiles {
-		for tile, x in row {
-			if tile.piece_type != .None && tile.piece_color == threatening_player {
-				sa.push(&enemy_piece_positions, Position{i32(x), i32(y)})
-			}
-		}
-	}
+	enemy_piece_positions := get_piece_positions(board.tiles, threatening_player)
 
 	set_of_threatened_positions: map[Position]Void
 	set_of_threatened_positions_en_passant: map[Position]Void
@@ -1333,6 +1308,8 @@ init_board :: proc() -> Board {
 	}
 }
 
+MAX_ELEMENTS_FOR_MOVE_RESULTS :: 64
+Move_Results :: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Move_Result)
 Move_Result :: struct {
 	move_piece_type: Piece_Type,
 	old_position: Position,
@@ -1348,9 +1325,6 @@ Piece_Action :: enum u8 {
 	Queenside_Castle,
 	Kingside_Castle,
 }
-
-MAX_ELEMENTS_FOR_MOVE_RESULTS :: 64
-Move_Results :: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Move_Result)
 
 KNIGHT_RELATIVE_MOVE_POSITIONS :: [?]Position{
 	{-1,  2},
@@ -1400,7 +1374,7 @@ get_blind_moves :: proc(board: Board, pos: Position, player_color: Player_Color)
 		// last double move was previous turn and is adjacent to this pawn
 		is_double_move_condition_satisfied: bool
 		// NB: move_turn >= n_turns - 1 because this fn is also used for checking for threatened positions, in which case the moveturn is +1
-		if (g.last_double_move_turn >= board.n_turns - 1) && (g.last_double_move_end_position.x == pos.x - 1 || g.last_double_move_end_position.x == pos.x + 1) {
+		if (board.last_double_move_turn >= board.n_turns - 1) && (board.last_double_move_end_position.x == pos.x - 1 || board.last_double_move_end_position.x == pos.x + 1) {
 			is_double_move_condition_satisfied = true
 		}
 
@@ -1509,7 +1483,6 @@ get_blind_moves :: proc(board: Board, pos: Position, player_color: Player_Color)
 		for dir in move_directions {
 			// cast ray until: intersect piece or out of bounds
 			bishop_ray: for i in 1..<BOARD_LENGTH {
-				// TODO: dont need flip_factor for biship, rook, queen, king, since moves are symmetric?
 				target_pos := pos + (dir * i32(i))
 				target_tile, in_bounds := get_tile_by_position(board.tiles, target_pos)
 				if !in_bounds || target_tile.piece_color == player_color {
@@ -1898,6 +1871,40 @@ get_other_player_color :: proc(player_color: Maybe(Player_Color)) -> Player_Colo
 draw_tile_border :: proc(tile_pos: Position, color: rl.Color) {
 	sprite_origin := board_tile_pos_to_sprite_logical_render_pos(tile_pos.x, tile_pos.y)
 	rl.DrawRectangleLinesEx({sprite_origin.x, sprite_origin.y, TILE_SIZE, TILE_SIZE}, 2, color)
+}
+
+test_init_board_king_threatening_ray :: proc() -> Board {
+	positions_with_pieces := [BOARD_LENGTH][BOARD_LENGTH]Piece_Type{
+		{}, 
+		{}, 
+		{}, 
+		{.None,.None,.None,.None,.King,.None, .None,.None}, 
+		{.None,.None,.None,.Bishop,.None,.None, .None,.None}, 
+		{}, 
+		{}, 
+		{.None,.None,.None,.King,.None,.None, .None,.None}, 
+	}
+	tiles: [BOARD_LENGTH][BOARD_LENGTH]Tile
+
+	for row, y in positions_with_pieces {
+		for piece_type, x in row {
+			piece_color: Piece_Color = .None
+			if y <= 3 && piece_type != .None {
+				piece_color = .White
+			} else if y >= 4  && piece_type != .None {
+				piece_color = .Black
+			}
+			tiles[y][x] = {
+				piece_type = piece_type,
+				piece_color = piece_color,
+			}
+		}
+	}
+	return Board{
+		tiles = tiles,
+		n_turns = 1,
+		current_player = .White,
+	}
 }
 
 test_init_board_king_cannot_capture_check :: proc() -> Board {
