@@ -215,6 +215,11 @@ init :: proc() {
 	// g.board = test_init_board_king_threatening_ray()
 	// g.board = test_init_white_checkmated_board()
 	// g.board = test_init_board_sparse()
+	// g.board = test_init_board_castle_allow()
+	// g.board = test_init_board_castle_threatened()
+	// g.board = test_init_board_castle_blocked()
+
+	// TEST CAPTURES
 	// sa.push(&g.board.captures[.White],
 	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
 	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
@@ -584,7 +589,6 @@ eval_board :: proc(board: ^Board) {
 									g.board.tiles,
 									sa.slice(&g.board.threatened_positions),
 								)
-	pr("can white queenside castle?", can_white_queenside_castle)
 	g.can_queenside_castle[.White] = can_white_queenside_castle
 
 	can_white_kingside_castle := is_castle_available(
@@ -612,6 +616,73 @@ eval_board :: proc(board: ^Board) {
 									sa.slice(&g.board.threatened_positions),
 								)
 	g.can_kingside_castle[.Black] = can_black_kingside_castle
+}
+
+debug_is_castle_available :: proc(
+	initial_king_position: Position,
+	initial_rook_position: Position,
+	is_check: bool,
+	tiles: Tiles,
+	threatened_positions: []Position,
+) -> bool {
+	// test while check
+	pr("--------------  is_castle_avail_debug --------------")
+	if is_check {
+		return false // cannot castle if check?
+	}
+	pr("passed is_checK")
+
+	// test king moved
+	king_tile, _ := get_tile_by_position(tiles, initial_king_position)
+	king_piece, is_king_piece := king_tile.(Piece)
+	if (is_king_piece && king_piece.has_moved) || !is_king_piece {
+		return false // no, king has moved
+	}
+	pr("passed king moved")
+
+	// test rook moved
+	rook_tile, _ := get_tile_by_position(tiles, initial_rook_position)
+	rook_piece, is_rook_piece := rook_tile.(Piece)
+	if (is_rook_piece && rook_piece.has_moved) || !is_rook_piece {
+		return false // no, rook has moved
+	}
+	pr("passed rook moved")
+
+	// test pieces blocking
+
+	// move left/right
+	move_pos_1: Position
+	move_pos_2: Position
+	if initial_king_position.x > initial_rook_position.x {
+		move_pos_1 = initial_king_position + {-1,0}
+		move_pos_2 = initial_king_position + {-2,0}
+	} else {
+		move_pos_1 = initial_king_position + {1,0}
+		move_pos_2 = initial_king_position + {2,0}
+	}
+
+	tile_1, _ := get_tile_by_position(tiles, move_pos_1)
+	if _, is_piece_1 := tile_1.(Piece); is_piece_1 {
+		return false // no, first pos to side is blocked by piece
+	}
+	pr("passed block 1st pos")
+
+	tile_2, _ := get_tile_by_position(tiles, move_pos_2)
+	if _, is_piece_2 := tile_2.(Piece); is_piece_2 {
+		return false // no, second pos to side is blocked by piece
+	}
+	pr("passed block 2nd pos")
+
+	// test positions threatened. Equivalent to testing for king moving into a check
+	is_threatened_1 := is_position_threatened(threatened_positions, move_pos_1)
+	is_threatened_2 := is_position_threatened(threatened_positions, move_pos_2)
+	if is_threatened_1 || is_threatened_2 {
+		return false // no, one of side positions is threatened
+	}
+	pr("passed threatened")
+
+	pr("----------------- end castle debug")
+	return true
 }
 
 is_castle_available :: proc(
@@ -898,9 +969,9 @@ draw :: proc() {
 			for x in 0..< BOARD_LENGTH {
 				color: rl.Color
 				if ((y*BOARD_LENGTH) + x) % 2 == 0 {
-					color = y % 2 == 1 ? LIGHT_TILE_COLOR :  DARK_TILE_COLOR
-				} else {
 					color = y % 2 == 1 ? DARK_TILE_COLOR : LIGHT_TILE_COLOR
+				} else {
+					color = y % 2 == 1 ? LIGHT_TILE_COLOR :  DARK_TILE_COLOR
 				}
 				rl.DrawRectangle(i32(math.round(BOARD_BOUNDS.x + f32(x) * TILE_SIZE)),
 								 i32(math.round(BOARD_BOUNDS.y + f32(y) * TILE_SIZE)),
@@ -1030,10 +1101,15 @@ draw :: proc() {
 			y := y0 + 3
 			rl.GuiLabel({x, y, white_panel_bounds.width, 10}, "White")
 
+			y += 15
+			cstr_player_duration := make_duration_display_string(get_player_duration(.White))
+			rl.GuiLabel({x, y, 100, 10}, cstr_player_duration)
+
 			if g.current_player == .White {
 				y += 15
-				cstr := make_duration_display_string(get_turn_duration())
-				rl.GuiLabel({x, y, 100, 10}, cstr)
+				cstr_turn_duration := make_duration_display_string(get_turn_duration())
+				cstr_player_turn_duration_text := fmt.ctprintf("+%v", cstr_turn_duration)
+				rl.GuiLabel({x, y, 100, 10}, cstr_player_turn_duration_text)
 			}
 
 			// Show cap pieces from bottom up
@@ -1060,10 +1136,15 @@ draw :: proc() {
 			y := y0 + 3
 			rl.GuiLabel({x, y, black_panel_bounds.width, 10}, "black")
 
+			y += 15
+			cstr_player_duration_text := make_duration_display_string(get_player_duration(.Black))
+			rl.GuiLabel({x, y, 100, 10}, cstr_player_duration_text)
+
 			if g.current_player == .Black {
 				y += 15
-				cstr := make_duration_display_string(get_turn_duration())
-				rl.GuiLabel({x, y, 100, 10}, cstr)
+				cstr_turn_duration := make_duration_display_string(get_turn_duration())
+				cstr_player_turn_duration_text := fmt.ctprintf("+%v", cstr_turn_duration)
+				rl.GuiLabel({x, y, 100, 10}, cstr_player_turn_duration_text)
 			}
 
 			// Show cap pieces from bottom up
@@ -1137,12 +1218,20 @@ draw :: proc() {
 			y += 40
 			debug_overlay_text_column(&x, &y, arr2[:])
 
+			make_string_from_value :: proc(v: any) -> string {
+				return fmt.tprintf("%v", v)
+			}
+
 			selected_piece_type_text: string
+			sp_has_moved: string
 			if selected_piece, selected_piece_ok := g.selected_piece.?; selected_piece_ok {
-				selected_piece_type_text = fmt.tprintf("%v", selected_piece.piece.type)
+				selected_piece_type_text = make_string_from_value(selected_piece.piece.type)
+				sp_has_moved = make_string_from_value(selected_piece.piece.has_moved)
 			} else {
 				selected_piece_type_text = "nil"
+				sp_has_moved = "nil"
 			}
+
 			arr3 := [?]string{
 				fmt.tprintf("n_turns: %v", 
 							g.n_turns),
@@ -1158,8 +1247,10 @@ draw :: proc() {
 							sa.len(g.board.captures[.Black])),
 				fmt.tprintf("selected_piece type: %v", 
 							selected_piece_type_text),
-				fmt.tprintf("black_queenside_castle: %v", 
-							g.board.can_queenside_castle[.Black]),
+				fmt.tprintf("selected_piece type: %v", 
+							selected_piece_type_text),
+				fmt.tprintf("selected_piece has_moved: %v", 
+							sp_has_moved),
 			}
 			y += 40
 			debug_overlay_text_column(&x, &y, arr3[:])
@@ -2001,9 +2092,9 @@ set_tile :: proc(tiles: ^Tiles, pos: Position, tile: Tile) {
 }
 
 end_turn :: proc(board: ^Board, t: ^Game_Time) {
-	end_board_turn(board)
 	t.players_duration[g.current_player] += g.time.turn_duration
 	t.turn_start = time.tick_now()
+	end_board_turn(board)
 	g.message = ""
 }
 
@@ -2060,6 +2151,10 @@ draw_piece :: proc(piece_type: Piece_Type, piece_color: Piece_Color, x,y: i32) {
 	if g.debug {
 		rl.DrawRectangle(i32(x), i32(y), 1, 1, rl.RED)
 	}
+}
+
+get_player_duration :: proc(p: Player_Color) -> time.Duration {
+	return g.time.players_duration[p]
 }
 
 get_turn_duration :: proc() -> time.Duration {
@@ -2193,14 +2288,71 @@ test_init_white_checkmated_board :: proc() -> Board {
 
 test_init_board_sparse :: proc() -> Board {
 	piece_types := [BOARD_LENGTH][BOARD_LENGTH]Piece_Type{
-		{.None,.None,.None,.King,.None,.None, .None,.None}, 
+		{.None,.None,.None,.None,.King,.None, .None,.None}, 
 		{}, 
 		{}, 
 		{}, 
 		{.None,.None,.None,.None,.None,.None, .None,.None}, 
 		{}, 
 		{}, 
-		{.None,.None,.None,.King,.None,.None, .None,.None}, 
+		{.None,.None,.None,.None,.King,.None, .None,.None}, 
+	}
+	tiles := make_tiles_with_piece_types(piece_types)
+	return Board{
+		tiles = tiles,
+		n_turns = 1,
+		current_player = .White,
+	}
+}
+
+test_init_board_castle_allow :: proc() -> Board {
+	piece_types := [BOARD_LENGTH][BOARD_LENGTH]Piece_Type{
+		{.Rook,.None,.None,.None,.King,.None, .None,.Rook}, 
+		{}, 
+		{}, 
+		{}, 
+		{.None,.None,.None,.None,.None,.None, .None,.None}, 
+		{}, 
+		{}, 
+		{.Rook,.None,.None,.None,.King,.None, .None,.Rook}, 
+	}
+	tiles := make_tiles_with_piece_types(piece_types)
+	return Board{
+		tiles = tiles,
+		n_turns = 1,
+		current_player = .White,
+	}
+}
+
+test_init_board_castle_threatened :: proc() -> Board {
+	piece_types := [BOARD_LENGTH][BOARD_LENGTH]Piece_Type{
+		{.Rook,.None,.None,.None,.King,.None, .None,.Rook}, 
+		{.None,.None,.None,.None,.None,.None, .None,.None}, 
+		{.None,.None,.None,.None,.None,.None, .None,.None}, 
+		{.None,.None,.None,.None,.Queen,.None, .None,.None}, 
+		{.None,.None,.Queen,.None,.None,.None, .None,.None}, 
+		{.None,.None,.None,.None,.None,.None, .None,.None}, 
+		{.None,.None,.None,.None,.None,.None, .None,.None}, 
+		{.Rook,.None,.None,.None,.King,.None, .None,.Rook}, 
+	}
+	tiles := make_tiles_with_piece_types(piece_types)
+	return Board{
+		tiles = tiles,
+		n_turns = 1,
+		current_player = .White,
+	}
+}
+
+test_init_board_castle_blocked :: proc() -> Board {
+	piece_types := [BOARD_LENGTH][BOARD_LENGTH]Piece_Type{
+		{.Rook,.None,.Bishop,.None,.King,.Bishop, .None,.Rook}, 
+		{.None,.None,.None,.None,.None,.None, .None,.None}, 
+		{.None,.None,.None,.None,.None,.None, .None,.None}, 
+		{.None,.None,.None,.None,.Queen,.None, .None,.None}, 
+		{.None,.None,.Queen,.None,.None,.None, .None,.None}, 
+		{.None,.None,.None,.None,.None,.None, .None,.None}, 
+		{.None,.None,.None,.None,.None,.None, .None,.None}, 
+		{.Rook,.None,.Bishop,.None,.King,.Bishop, .None,.Rook}, 
 	}
 	tiles := make_tiles_with_piece_types(piece_types)
 	return Board{
