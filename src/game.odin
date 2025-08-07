@@ -9,6 +9,7 @@ import "core:time/datetime"
 import "core:time/timezone"
 import "core:strings"
 import sa "core:container/small_array"
+
 import rl "vendor:raylib"
 
 pr :: fmt.println
@@ -24,9 +25,11 @@ LOGICAL_SCREEN_HEIGHT :: 360
 LOGICAL_SCREEN_WIDTH :: 540
 RENDER_TEXTURE_SCALE :: 2
 
+WINDOW_TITLE :: "Odin Gamejam Template"
 WINDOW_W :: 1600
 WINDOW_H :: 900
 TICK_RATE :: 60
+
 
 BACKGROUND_COLOR :: rl.GRAY
 DARK_TILE_COLOR :: rl.LIGHTGRAY
@@ -320,7 +323,9 @@ propose_move :: proc(board: Board, action: Play_Action) -> (
 				new_selected_piece := Selected_Piece_Data{
 					position = mouse_tile_pos,
 					piece = clicked_piece,
-					possible_moves = get_blind_moves(board, mouse_tile_pos, g.current_player),
+					possible_moves = get_blind_moves(board, 
+													 mouse_tile_pos, 
+													 g.current_player),
 				}
 				g.selected_piece = new_selected_piece
 				pr("Action: Select_Piece")
@@ -342,7 +347,9 @@ propose_move :: proc(board: Board, action: Play_Action) -> (
 					new_selected_piece := Selected_Piece_Data{
 						position = mouse_tile_pos,
 						piece = clicked_piece,
-						possible_moves = get_blind_moves(board, mouse_tile_pos, g.current_player),
+						possible_moves = get_blind_moves(board, 
+														 mouse_tile_pos, 
+														 g.current_player),
 					}
 					g.selected_piece = new_selected_piece
 					pr("Action: Select_Piece")
@@ -1171,7 +1178,7 @@ game_update :: proc() {
 @(export)
 game_init_window :: proc() {
 	rl.SetConfigFlags({.WINDOW_RESIZABLE, .VSYNC_HINT})
-	rl.InitWindow(WINDOW_W, WINDOW_H, "Odin Gamejam Template")
+	rl.InitWindow(WINDOW_W, WINDOW_H, WINDOW_TITLE)
 	rl.SetWindowPosition(10, 125)
 	rl.SetTargetFPS(TICK_RATE )
 	rl.SetExitKey(nil)
@@ -1320,10 +1327,10 @@ draw_sprite :: proc(
 	tint: rl.Color = rl.WHITE
 ) {
 	tex := get_texture(texture_id)
-	src_rect := rl.Rectangle {
+	src_rect := Rec {
 		0, 0, f32(tex.width), f32(tex.height),
 	}
-	dst_rect := rl.Rectangle {
+	dst_rect := Rec {
 		pos.x, pos.y, size.x, size.y,
 	}
 	rl.DrawTexturePro(tex, src_rect, dst_rect, {}, rotation, tint)
@@ -1398,8 +1405,8 @@ end_letterbox_rendering :: proc() {
 	// Draw the render texture with letterboxing
 	render_texture_width: f32 = LOGICAL_SCREEN_WIDTH * RENDER_TEXTURE_SCALE
 	render_texture_height: f32 = LOGICAL_SCREEN_HEIGHT * RENDER_TEXTURE_SCALE
-	src := rl.Rectangle{0, 0, render_texture_width, -render_texture_height} // negative height flips texture
-	dst := rl.Rectangle{-offset_x, -offset_y, viewport_width, viewport_height}
+	src := Rec{0, 0, render_texture_width, -render_texture_height} // negative height flips texture
+	dst := Rec{-offset_x, -offset_y, viewport_width, viewport_height}
 	rl.DrawTexturePro(g.render_texture.texture, src, dst, {}, 0, rl.WHITE)
 	// rl.EndDrawing() // moved outside for debug overlay
 }
@@ -1863,7 +1870,7 @@ get_threatened_positions_by_piece :: proc(
 		// last double move was previous turn and is adjacent to this pawn
 		is_double_move_condition_satisfied: bool
 		// NB: move_turn >= n_turns - 1 because this fn is also used for checking for threatened positions, in which case the moveturn is +1
-		if (g.last_double_move_turn >= board.n_turns - 1) && (g.last_double_move_end_position.x == pos.x - 1 || g.last_double_move_end_position.x == pos.x + 1) {
+		if (board.last_double_move_turn >= board.n_turns - 1) && (board.last_double_move_end_position.x == pos.x - 1 || board.last_double_move_end_position.x == pos.x + 1) {
 			is_double_move_condition_satisfied = true
 		}
 
