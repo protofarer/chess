@@ -183,7 +183,10 @@ setup :: proc() {
 	g = new(Game_Memory)
 	g^ = Game_Memory {
 		resman = resman,
-		render_texture = rl.LoadRenderTexture(LOGICAL_SCREEN_WIDTH * RENDER_TEXTURE_SCALE, LOGICAL_SCREEN_HEIGHT * RENDER_TEXTURE_SCALE),
+		render_texture = rl.LoadRenderTexture(
+			LOGICAL_SCREEN_WIDTH * RENDER_TEXTURE_SCALE, 
+			LOGICAL_SCREEN_HEIGHT * RENDER_TEXTURE_SCALE
+		),
 		// audman = audman,
 	}
 
@@ -209,18 +212,18 @@ init :: proc() {
 	// g.board = test_init_board_king_threatening_ray()
 	// g.board = test_init_white_checkmated_board()
 	// g.board = test_init_board_sparse()
-	sa.push(&g.board.captures[.White],
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-	)
-	sa.push(&g.board.captures[.Black],
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-	)
+	// sa.push(&g.board.captures[.White],
+	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+	// )
+	// sa.push(&g.board.captures[.Black],
+	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+	// )
 
 	 // name == "America/New York"
 	if local_timezone, ok_timezone := timezone.region_load("local"); ok_timezone {
@@ -257,9 +260,6 @@ update :: proc() {
 	// next_scene: Maybe(Scene) = nil
 	switch &s in g.scene {
 	case Play_Scene:
-		// TODO: eval_board first, thus informing what moves can be made.
-		// - should only call after a board update / move
-		// - stores all possible moves for current player, all threatened positions, check, checkmate
 		if g.board.turn_step == .Eval {
 			eval_board(&g.board)
 			g.board.turn_step = .Try_Move
@@ -285,30 +285,26 @@ update :: proc() {
 	}
 }
 
-eval_move :: proc(original_board: Board, proposed_move_result: Move_Result) -> (move_result: Move_Result, is_legal: bool) {
+// test for legality, if illegal emit message, else approve move
+eval_move :: proc(original_board: Board, proposed_move_result: Move_Result) -> (
+	move_result: Move_Result, is_legal: bool
+) {
 	proposed_board := original_board
 	make_move(&proposed_board, proposed_move_result)
 	eval_board(&proposed_board)
 
-	if proposed_move_result.move_piece_type == .King {
-		if is_position_threatened(proposed_board, proposed_move_result.new_position, g.current_player) {
-			is_legal = false
-			g.message = "Illegal move: cannot move into a check position"
-			return
-		}
+	// Use instructive state from the evaluated proposed_board
+	if proposed_board.is_check {
+		g.message = "Illegal move: cannot move into a check position"
+		return {}, false
 	}
-
-	// TODO: test for legality, if illegal emit message
-	// use get_actual_possible_moves_for_player, restricts moves:
-	// - check
-	// - checkmate
-	// - en passant force
-	// TODO: need to emit illegal move message. Get_actual_possible_moves or someone needs to determine what kind of illegal move was made
-	// - when current player is_check, 
 	return proposed_move_result, true
 }
 
-propose_move :: proc(board: Board, action: Play_Action) -> (move_result: Move_Result, is_move_proposed: bool) {
+propose_move :: proc(board: Board, action: Play_Action) -> (
+	move_result: Move_Result,
+	is_move_proposed: bool
+) {
 	// First, position and existence changes are made: move, capture, special move initiation
 	// Second, "Subsequent state resolution": promotion, followup submoves (castling), check, 
 	action_switch: switch action {
@@ -458,12 +454,73 @@ make_move :: proc(board: ^Board, move_result: Move_Result) {
 
 	case .Kingside_Castle:
 		pr("KINGSIDE CASTLE")
+		// Update the selected piece and store in new position
+		selected_piece_piece := selected_piece.piece
+
+		curr_king_pos := selected_piece.position
+		set_tile(&board.tiles, curr_king_pos, Empty_Tile{})
+
+		new_king_piece := selected_piece_piece
+		new_king_piece.has_moved = true
+		new_king_pos := move_result.new_position
+		set_tile(&board.tiles, new_king_pos, new_king_piece)
+
+		// Move Corresponding Rook
+		rook_pos: Position
+		if board.current_player == .White {
+			rook_pos = WHITE_KINGSIDE_ROOK_POSITION
+		} else {
+			rook_pos = BLACK_KINGSIDE_ROOK_POSITION
+		}
+		rook_tile, _ := get_tile_by_position(board.tiles, rook_pos)
+		rook_piece, _ := rook_tile.(Piece)
+		set_tile(&board.tiles, rook_pos, Empty_Tile{})
+
+		new_rook_piece := rook_piece
+		new_rook_piece.has_moved = true
+		new_rook_pos := new_king_pos + {-1,0}
+		set_tile(&board.tiles, new_rook_pos, new_rook_piece)
+
 	case .Queenside_Castle:
 		pr("QUEENSIDE CASTLE")
-	case .None:
+		// Update the selected piece and store in new position
+		selected_piece_piece := selected_piece.piece
 
+		curr_king_pos := selected_piece.position
+		set_tile(&board.tiles, curr_king_pos, Empty_Tile{})
+
+		new_king_piece := selected_piece_piece
+		new_king_piece.has_moved = true
+		new_king_pos := move_result.new_position
+		set_tile(&board.tiles, new_king_pos, new_king_piece)
+
+		// Move Corresponding Rook
+		rook_pos: Position
+		if board.current_player == .White {
+			rook_pos =  WHITE_QUEENSIDE_ROOK_POSITION
+		} else {
+			rook_pos = BLACK_QUEENSIDE_ROOK_POSITION
+		}
+		rook_tile, _ := get_tile_by_position(board.tiles, rook_pos)
+		rook_piece, _ := rook_tile.(Piece)
+		set_tile(&board.tiles, rook_pos, Empty_Tile{})
+
+		new_rook_piece := rook_piece
+		new_rook_piece.has_moved = true
+		new_rook_pos := new_king_pos + {1,0}
+		set_tile(&board.tiles, new_rook_pos, new_rook_piece)
+
+	case .None:
 	}
 }
+
+WHITE_KING_POSITION :: Position{4,0}
+WHITE_QUEENSIDE_ROOK_POSITION :: Position{0,0}
+WHITE_KINGSIDE_ROOK_POSITION :: Position{BOARD_LENGTH-1,0}
+
+BLACK_KING_POSITION :: Position{4,BOARD_LENGTH-1}
+BLACK_QUEENSIDE_ROOK_POSITION :: Position{0,BOARD_LENGTH-1}
+BLACK_KINGSIDE_ROOK_POSITION :: Position{BOARD_LENGTH-1,BOARD_LENGTH-1}
 
 // All this does is flag check or checkmate
 // This is called at start of next player's turn (right afte end_turn but before next frame)
@@ -472,16 +529,20 @@ eval_board :: proc(board: ^Board) {
 
 	// Cache state ///////////////////////////////////////////////////////////////////////
 	// this is for moves to present to player, including illegal moves
-
-	// CSDR inline
-	board.presented_player_moves = get_moves_to_present_to_player(board^, board.current_player)
-	board.threatened_positions = get_threatened_all_positions_for_player(board^, g.current_player)
-	board.legal_moves = get_legal_moves(g.current_player, sa.slice(&board.threatened_positions), sa.slice(&board.presented_player_moves))
+	board.presented_player_moves = get_moves_to_present_to_player(board^,
+																  board.current_player)
+	board.threatened_positions = get_threatened_all_positions_for_player(board^,
+																		 g.current_player)
+	board.legal_moves = get_legal_moves(g.current_player, 
+										sa.slice(&board.threatened_positions),
+										sa.slice(&board.presented_player_moves))
 	/////////////////////////////////////////////////////////////////////////////////////
 
 	// Check and Checkmate
 
-	is_king_threatened := is_position_threatened(board^, get_king_position(board.tiles, board.current_player), board.current_player)
+	is_king_threatened := is_position_threatened(sa.slice(&board.threatened_positions),
+												 get_king_position(board.tiles, 
+												 board.current_player))
 	if is_king_threatened {
 		board.is_check = true
 
@@ -500,94 +561,117 @@ eval_board :: proc(board: ^Board) {
 		board.gameover = true
 	}
 
-	// TODO: Draw
-
-	// TODO: set castling state
-	// test castling, rules
-	// only test when castling is still available
-	// do eval here so it only need to be done once
 	// TODO: refactor propose_move (and others?) so that state is set here and the other fns simple read the state, eg see how castling is done here.
-	// (eliminate calculating every time the player Selects a piece)
 
-	// Conditions:
-	// 	// king, rook involved, cannot have moved
-	// 	// king not in check
-	// 	// no pieces between
-	// 	// king doesn't move through a threatened position
+	// Castling Conditions:
+	// - king not in check
+	// - king & rook cannot have moved
+	// - king move-through and final position must have no piece, nor under threat
 
-	// some conditions violate castling forver, otherwise, temporarily.
-	// 	// king not in check
-	// 	// no pieces between
-	// 	// king doesn't move through a threatened position
-	WHITE_QUEENSIDE_ROOK_POSITION :: Position{0,0}
-	WHITE_KINGSIDE_ROOK_POSITION :: Position{BOARD_LENGTH-1, 0}
-	BLACK_QUEENSIDE_ROOK_POSITION :: Position{0,BOARD_LENGTH-1}
-	BLACK_KINGSIDE_ROOK_POSITION :: Position{BOARD_LENGTH-1, BOARD_LENGTH-1}
-	WHITE_KING_POSITION :: Position{4,0}
-	BLACK_KING_POSITION :: Position{4,BOARD_LENGTH-1}
-	player_colors := [?]Player_Color{
-		.White, .Black
-	}
-	for pc in player_colors {
-		has_white_king_moved := false
-		white_king_piece := get_king_piece(board.tiles, pc) // tests for King piece type
-		if white_king_piece.has_moved {
-			has_white_king_moved = true
-		}
+	// TODO: only eval for current player
 
-		// Queenside
+	can_white_queenside_castle := is_castle_available(
+									WHITE_KING_POSITION,
+									WHITE_QUEENSIDE_ROOK_POSITION,
+									g.board.is_check,
+									g.board.tiles,
+									sa.slice(&g.board.threatened_positions),
+								)
+	pr("can white queenside castle?", can_white_queenside_castle)
+	g.can_queenside_castle[.White] = can_white_queenside_castle
 
-		// get expected tile
-		has_white_queenside_rook_moved := false
-		white_queenside_rook_tile, _ := get_tile_by_position(board.tiles, WHITE_QUEENSIDE_ROOK_POSITION)
-		if wqrt_piece, is_wqrt_piece := white_queenside_rook_tile.(Piece); is_wqrt_piece && wqrt_piece.has_moved {
-			has_white_queenside_rook_moved = true
-		}
-		// Is any piece blocking?
-		pos_queenside := Position{
-			WHITE_KING_POSITION.x - 1,
-			WHITE_KING_POSITION.y,
-		}
-		queenside_blocked: bool
-		tile_queenside, _ := get_tile_by_position(board.tiles, pos_queenside)
-		if queenside_piece, is_piece := tile_queenside.(Piece); is_piece {
-			queenside_blocked = true
-		}
+	can_white_kingside_castle := is_castle_available(
+									WHITE_KING_POSITION,
+									WHITE_KINGSIDE_ROOK_POSITION,
+									g.board.is_check,
+									g.board.tiles,
+									sa.slice(&g.board.threatened_positions),
+								)
+	g.can_kingside_castle[.White] = can_white_kingside_castle
 
-		pos_queenside2 := Position{
-			WHITE_KING_POSITION.x - 2,
-			WHITE_KING_POSITION.y,
-		}
-		tile_queenside2, _ := get_tile_by_position(board.tiles, pos_queenside2)
-		if queenside_piece2, is_piece2 := tile_queenside2.(Piece); is_piece2 {
-			queenside_blocked = true
-		}
-
-		// Is any in-between position threatened?
-		// TODO: calc threatened positions early in eval_board, use here
-		// if pos_queenside or queenside2 are threatened, fail
-		queenside_threatened := false
-
-		if has_white_king_moved || has_white_queenside_rook_moved || queenside_blocked || queenside_threatened || g.is_check {
-			board.can_queenside_castle[pc] = false
-		}
-
-		// Kingside
-
-		// get expected tile
-		has_white_kingside_rook_moved := false
-		white_kingside_rook_tile, _ := get_tile_by_position(board.tiles, WHITE_KINGSIDE_ROOK_POSITION)
-		if wkrt_piece, is_wkrt_piece := white_kingside_rook_tile.(Piece); is_wkrt_piece && wkrt_piece.has_moved {
-			has_white_kingside_rook_moved = true
-		}
-
-		if has_white_king_moved || has_white_kingside_rook_moved || board.is_check {
-			board.can_kingside_castle[pc] = false
-		}
-	}
+	can_black_queenside_castle := is_castle_available(
+									BLACK_KING_POSITION,
+									BLACK_QUEENSIDE_ROOK_POSITION,
+									g.board.is_check,
+									g.board.tiles,
+									sa.slice(&g.board.threatened_positions),
+								)
+	g.can_queenside_castle[.Black] = can_black_queenside_castle
+	can_black_kingside_castle := is_castle_available(
+									BLACK_KING_POSITION,
+									BLACK_KINGSIDE_ROOK_POSITION,
+									g.board.is_check,
+									g.board.tiles,
+									sa.slice(&g.board.threatened_positions),
+								)
+	g.can_kingside_castle[.Black] = can_black_kingside_castle
 }
 
-get_moves_to_present_to_player :: proc(board: Board, player_color: Player_Color) -> (presented_moves: sa.Small_Array(BOARD_LENGTH * BOARD_LENGTH, Move_Result)) {
+is_castle_available :: proc(
+	initial_king_position: Position,
+	initial_rook_position: Position,
+	is_check: bool,
+	tiles: Tiles,
+	threatened_positions: []Position,
+) -> bool {
+	// test while check
+	if is_check {
+		return false // cannot castle if check?
+	}
+
+	// test king moved
+	king_tile, _ := get_tile_by_position(tiles, initial_king_position)
+	king_piece, is_king_piece := king_tile.(Piece)
+	if (is_king_piece && king_piece.has_moved) || !is_king_piece {
+		return false // no, king has moved
+	}
+
+	// test rook moved
+	rook_tile, _ := get_tile_by_position(tiles, initial_rook_position)
+	rook_piece, is_rook_piece := rook_tile.(Piece)
+	if (is_rook_piece && rook_piece.has_moved) || !is_rook_piece {
+		return false // no, rook has moved
+	}
+
+	// test pieces blocking
+
+	// move left/right
+	move_pos_1: Position
+	move_pos_2: Position
+	if initial_king_position.x > initial_rook_position.x {
+		move_pos_1 = initial_king_position + {-1,0}
+		move_pos_2 = initial_king_position + {-2,0}
+	} else {
+		move_pos_1 = initial_king_position + {1,0}
+		move_pos_2 = initial_king_position + {2,0}
+	}
+
+	tile_1, _ := get_tile_by_position(tiles, move_pos_1)
+	if _, is_piece_1 := tile_1.(Piece); is_piece_1 {
+		return false // no, first pos to side is blocked by piece
+	}
+
+	tile_2, _ := get_tile_by_position(tiles, move_pos_2)
+	if _, is_piece_2 := tile_2.(Piece); is_piece_2 {
+		return false // no, second pos to side is blocked by piece
+	}
+
+	// test positions threatened. Equivalent to testing for king moving into a check
+	is_threatened_1 := is_position_threatened(threatened_positions, move_pos_1)
+	is_threatened_2 := is_position_threatened(threatened_positions, move_pos_2)
+	if is_threatened_1 || is_threatened_2 {
+		return false // no, one of side positions is threatened
+	}
+
+	return true
+}
+
+get_moves_to_present_to_player :: proc(
+	board: Board, 
+	player_color: Player_Color
+) -> (
+	presented_moves: Move_Results
+) {
 	piece_positions := get_piece_positions(board.tiles, player_color)
 	for piece_position in sa.slice(&piece_positions) {
 		possible_moves := get_blind_moves(board, piece_position, player_color)
@@ -605,30 +689,35 @@ get_moves_to_present_to_player :: proc(board: Board, player_color: Player_Color)
 	return
 }
 
-get_legal_moves :: proc(player_color: Player_Color, threatened_positions: []Position, presented_player_moves: []Move_Result) -> (legal_moves: Move_Results) {
-	// This is similar to get_player_moves
+get_legal_moves :: proc(
+	player_color: Player_Color, 
+	threatened_positions: []Position, 
+	presented_player_moves: []Move_Result
+) -> (
+	legal_moves: Move_Results
+) {
 	outer_loop: for presented_move_result in presented_player_moves {
-		if presented_move_result.piece_action == .En_Passant {
-			// TODO: need to store multiple en passents (rare edge case)
-			sa.clear(&legal_moves)
-			sa.push(&legal_moves, presented_move_result)
-			return
-		} else {
-			if presented_move_result.move_piece_type == .King {
-				for threatened_pos in threatened_positions {
-					if presented_move_result.new_position == threatened_pos {
-						continue outer_loop
-					}
+		if presented_move_result.move_piece_type == .King {
+			for threatened_pos in threatened_positions {
+				if presented_move_result.new_position == threatened_pos {
+					continue outer_loop
 				}
-				sa.push(&legal_moves, presented_move_result)
 			}
+			sa.push(&legal_moves, presented_move_result)
 		}
 	}
 	return
 }
 
-get_king_legal_moves :: proc(board: Board, player_color: Player_Color) -> (legal_moves: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Move_Result)) {
-	blind_moves := get_blind_moves(board, get_king_position(board.tiles, player_color), player_color)
+get_king_legal_moves :: proc(
+	board: Board, 
+	player_color: Player_Color
+) -> (
+	legal_moves: Move_Results
+) {
+	blind_moves := get_blind_moves(board, 
+								   get_king_position(board.tiles, player_color), 
+								   player_color)
 	threatened_positions := board.threatened_positions
 	for blind_move in sa.slice(&blind_moves) {
 		for p in sa.slice(&threatened_positions) {
@@ -642,7 +731,9 @@ get_king_legal_moves :: proc(board: Board, player_color: Player_Color) -> (legal
 }
 
 can_king_move :: proc(board: Board, player_color: Player_Color) -> bool {
-	blind_moves := get_blind_moves(board, get_king_position(board.tiles, player_color), player_color)
+	blind_moves := get_blind_moves(board, 
+								   get_king_position(board.tiles, player_color), 
+								   player_color)
 	threatened_positions := board.threatened_positions
 	for blind_move in sa.slice(&blind_moves) {
 		is_move_threatened := false
@@ -659,10 +750,10 @@ can_king_move :: proc(board: Board, player_color: Player_Color) -> bool {
 	return false
 }
 
-is_position_threatened :: proc(board: Board, tile_pos: Position, player_color: Player_Color) -> bool {
+// CSDR rename _current_turn or _current_player
+is_position_threatened :: proc(threatened_positions: []Position, tile_pos: Position) -> bool {
 	// does any enemy piece threaten this position?
-	threatened_positions := board.threatened_positions
-	for pos in sa.slice(&threatened_positions) {
+	for pos in threatened_positions {
 		if tile_pos == pos {
 			return true
 		}
@@ -673,8 +764,8 @@ is_position_threatened :: proc(board: Board, tile_pos: Position, player_color: P
 get_king_position :: proc(tiles: Tiles, player_color: Player_Color) -> Position {
 	for row, y in tiles {
 		for tile, x in row {
-
-			if piece, is_piece := tile.(Piece); is_piece && piece.type == .King && piece.color == player_color {
+			piece, is_piece := tile.(Piece)
+			if is_piece && piece.type == .King && piece.color == player_color {
 				return Position{i32(x),i32(y)}
 			}
 		}
@@ -697,7 +788,11 @@ get_king_piece :: proc(tiles: Tiles, player_color: Player_Color) -> Piece {
 	return {}
 }
 
-get_piece_positions :: proc(tiles: Tiles, player_color: Player_Color) ->  (piece_positions: sa.Small_Array(16, Position)) {
+get_piece_positions :: proc(
+	tiles: Tiles, player_color: Player_Color
+) -> (
+	piece_positions: sa.Small_Array(16, Position)
+) {
 	for row, y in tiles {
 		for tile, x in row {
 			if piece, is_piece := tile.(Piece); is_piece && piece.color == player_color {
@@ -708,7 +803,12 @@ get_piece_positions :: proc(tiles: Tiles, player_color: Player_Color) ->  (piece
 	return
 }
 
-get_threatened_all_positions_for_player :: proc(board: Board, player_being_threatened: Player_Color) -> (threatened_positions: sa.Small_Array(BOARD_LENGTH * BOARD_LENGTH, Position)) {
+get_threatened_all_positions_for_player :: proc(
+	board: Board, 
+	player_being_threatened: Player_Color
+) -> (
+	threatened_positions: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Position)
+) {
 	// Cant use blind moves... it doesnt take into account all threatened positions
 
 	threatening_player := get_other_player_color(player_being_threatened)
@@ -722,7 +822,10 @@ get_threatened_all_positions_for_player :: proc(board: Board, player_being_threa
 	// TODO: EDGE CASE: multiple en_passants possible... change get_blind_moves and assoc
 	en_passant_override := false
 	for enemy_piece_pos in sa.slice(&enemy_piece_positions) {
-		piece_threatened_positions, is_en_passant := get_threatened_positions_by_piece(board, enemy_piece_pos, threatening_player)
+		piece_threatened_positions, is_en_passant := get_threatened_positions_by_piece(
+																board,
+																enemy_piece_pos,
+																threatening_player)
 		for ptp in sa.slice(&piece_threatened_positions) {
 			set_of_threatened_positions[ptp] = {}
 			if is_en_passant == true {
@@ -792,7 +895,11 @@ draw :: proc() {
 				} else {
 					color = y % 2 == 1 ? DARK_TILE_COLOR : LIGHT_TILE_COLOR
 				}
-				rl.DrawRectangle(i32(math.round(BOARD_BOUNDS.x + f32(x) * TILE_SIZE)), i32(math.round(BOARD_BOUNDS.y + f32(y) * TILE_SIZE)), i32(math.round(TILE_SIZE)), i32(math.round(TILE_SIZE)), color)
+				rl.DrawRectangle(i32(math.round(BOARD_BOUNDS.x + f32(x) * TILE_SIZE)),
+								 i32(math.round(BOARD_BOUNDS.y + f32(y) * TILE_SIZE)),
+								 i32(math.round(TILE_SIZE)),
+								 i32(math.round(TILE_SIZE)),
+								 color)
 			}
 		}
 
@@ -851,7 +958,11 @@ draw :: proc() {
 					render_pos.x += 2
 					tile_render_pos_x := i32(math.round(render_pos.x))
 					tile_render_pos_y := i32(math.round(render_pos.y))
-					rl.DrawText(fmt.ctprintf("%v,%v", x,y), tile_render_pos_x, tile_render_pos_y, 10, rl.BLUE)
+					rl.DrawText(fmt.ctprintf("%v,%v", x,y), 
+								tile_render_pos_x,
+								tile_render_pos_y,
+								10,
+								rl.BLUE)
 				}
 			}
 
@@ -972,10 +1083,11 @@ draw :: proc() {
 	end_letterbox_rendering()
 
 	// Debug overlay
-	debug_overlay_text_block :: proc(x,y: ^i32, slice_cstr: []cstring) {
+	debug_overlay_text_column :: proc(x,y: ^i32, slice_cstr: []string) {
 		gy: i32 = 20
 		for s in slice_cstr {
-			rl.DrawText(s, x^, y^, 20, rl.WHITE)
+			cstr := strings.clone_to_cstring(s)
+			rl.DrawText(cstr, x^, y^, 20, rl.WHITE)
 			y^ += gy
 		}
 	}
@@ -983,38 +1095,67 @@ draw :: proc() {
 		{
 			x: i32 = 5
 			y: i32 = 40
-			arr := [?]cstring{
-				fmt.ctprintf("game_duration: %v", make_duration_display_string(get_game_duration())),
-				fmt.ctprintf("turn_duration: %v", make_duration_display_string(get_turn_duration())),
-				fmt.ctprintf("white running: %v", make_duration_display_string(g.time.players_duration[.White])),
-				fmt.ctprintf("black running: %v", make_duration_display_string(g.time.players_duration[.Black])),
-				fmt.ctprintf("game_start_datetime: %v", make_datetime_display_string(g.time.game_start_datetime)),
-				fmt.ctprintf("game_end_datetime: %v", make_datetime_display_string(g.time.game_end_datetime)),
+			arr := [?]string{
+				fmt.tprintf("game_duration: %v", 
+							make_duration_display_string(get_game_duration())),
+				fmt.tprintf("turn_duration: %v", 
+							make_duration_display_string(get_turn_duration())),
+				fmt.tprintf("white running: %v", 
+							make_duration_display_string(g.time.players_duration[.White])),
+				fmt.tprintf("black running: %v", 
+							make_duration_display_string(g.time.players_duration[.Black])),
+				fmt.tprintf("game_start_datetime: %v", 
+							make_datetime_display_string(g.time.game_start_datetime)),
+				fmt.tprintf("game_end_datetime: %v", 
+							make_datetime_display_string(g.time.game_end_datetime)),
 			}
-			debug_overlay_text_block(&x, &y, arr[:])
+			debug_overlay_text_column(&x, &y, arr[:])
 
-			arr2 := [?]cstring{
-				fmt.ctprintf("mouse_pos: %v", rl.GetMousePosition()),
-				fmt.ctprintf("mouse_tile_pos: %v", get_tile_position_from_mouse_already_over_board()),
-				fmt.ctprintf("check: %v", g.board.is_check),
-				fmt.ctprintf("white_kingside_castle: %v", g.board.can_kingside_castle[.White]),
-				fmt.ctprintf("white_queenside_castle: %v", g.board.can_queenside_castle[.White]),
-				fmt.ctprintf("black_kingside_castle: %v", g.board.can_kingside_castle[.Black]),
-				fmt.ctprintf("black_queenside_castle: %v", g.board.can_queenside_castle[.Black]),
+			arr2 := [?]string{
+				fmt.tprintf("mouse_pos: %v", 
+							rl.GetMousePosition()),
+				fmt.tprintf("mouse_tile_pos: %v", 
+							get_tile_position_from_mouse_already_over_board()),
+				fmt.tprintf("check: %v", 
+							g.board.is_check),
+				fmt.tprintf("white_kingside_castle: %v", 
+							g.board.can_kingside_castle[.White]),
+				fmt.tprintf("white_queenside_castle: %v", 
+							g.board.can_queenside_castle[.White]),
+				fmt.tprintf("black_kingside_castle: %v", 
+							g.board.can_kingside_castle[.Black]),
+				fmt.tprintf("black_queenside_castle: %v", 
+							g.board.can_queenside_castle[.Black]),
 			}
 			y += 40
-			debug_overlay_text_block(&x, &y, arr2[:])
-			// game start
-			// game running
-			// turn start
-			// turn running
-			// players running
+			debug_overlay_text_column(&x, &y, arr2[:])
 
-			// curr player
-			// points
-			// captures
-			// selected piece
-			// num turns
+			selected_piece_type_text: string
+			if selected_piece, selected_piece_ok := g.selected_piece.?; selected_piece_ok {
+				selected_piece_type_text = fmt.tprintf("%v", selected_piece.piece.type)
+			} else {
+				selected_piece_type_text = "nil"
+			}
+			arr3 := [?]string{
+				fmt.tprintf("n_turns: %v", 
+							g.n_turns),
+				fmt.tprintf("curr_player: %v", 
+							g.current_player),
+				fmt.tprintf("points-white: %v", 
+							g.points[.White]),
+				fmt.tprintf("points-black: %v", 
+							g.points[.Black]),
+				fmt.tprintf("n-captures-white: %v", 
+							sa.len(g.board.captures[.White])),
+				fmt.tprintf("n-captures-black: %v", 
+							sa.len(g.board.captures[.Black])),
+				fmt.tprintf("selected_piece type: %v", 
+							selected_piece_type_text),
+				fmt.tprintf("black_queenside_castle: %v", 
+							g.board.can_queenside_castle[.Black]),
+			}
+			y += 40
+			debug_overlay_text_column(&x, &y, arr3[:])
 		}
 	}
 	rl.EndDrawing()
@@ -1157,7 +1298,10 @@ Play_Action :: enum {
 }
 
 is_mouse_over_board :: proc() -> bool {
-	return is_mouse_over_rect(BOARD_BOUNDS.x, BOARD_BOUNDS.y, BOARD_BOUNDS.width, BOARD_BOUNDS.height)
+	return is_mouse_over_rect(BOARD_BOUNDS.x, 
+							  BOARD_BOUNDS.y, 
+							  BOARD_BOUNDS.width, 
+							  BOARD_BOUNDS.height)
 }
 
 process_play_input :: proc(s: ^Play_Scene) -> Play_Action {
@@ -1167,7 +1311,14 @@ process_play_input :: proc(s: ^Play_Scene) -> Play_Action {
 	return .None
 }
 
-draw_sprite :: proc(texture_id: Texture_ID, pos: Vec2, size: Vec2, rotation: f32 = 0, scale: f32 = 1, tint: rl.Color = rl.WHITE) {
+draw_sprite :: proc(
+	texture_id: Texture_ID, 
+	pos: Vec2, 
+	size: Vec2, 
+	rotation: f32 = 0, 
+	scale: f32 = 1, 
+	tint: rl.Color = rl.WHITE
+) {
 	tex := get_texture(texture_id)
 	src_rect := rl.Rectangle {
 		0, 0, f32(tex.width), f32(tex.height),
@@ -1189,13 +1340,20 @@ make_datetime_display_string :: proc(dt: datetime.DateTime) -> cstring {
 		// log.error("Failed datetime validation:", e)
 		return fmt.ctprint("Invalid date")
 	}
-	return fmt.ctprintf("%v %v, %v %v:%v:%v", get_month_by_seq(dt.month), dt.day, dt.year, dt.hour, dt.minute, dt.second)
+	return fmt.ctprintf("%v %v, %v %v:%v:%v", 
+						get_month_by_seq(dt.month), 
+						dt.day,
+						dt.year,
+						dt.hour,
+						dt.minute,
+						dt.second)
 }
 
 // get position of top left corner of tile in render (render logical) coords from game logical coords board tile pos
 board_tile_pos_to_sprite_logical_render_pos :: proc(x, y: i32) -> Vec2 {
 	// origin is bottom left of board
-	pos := Vec2{BOARD_BOUNDS.x + f32(x) * TILE_SIZE, BOARD_BOUNDS.y + BOARD_BOUNDS.height - f32(y+1) * TILE_SIZE}
+	pos := Vec2{BOARD_BOUNDS.x + f32(x) * TILE_SIZE, 
+				BOARD_BOUNDS.y + BOARD_BOUNDS.height - f32(y+1) * TILE_SIZE}
 	return pos
 }
 
@@ -1297,7 +1455,11 @@ init_board :: proc() -> Board {
 	}
 }
 
-make_tiles_with_piece_types :: proc(piece_types: [BOARD_LENGTH][BOARD_LENGTH]Piece_Type) -> (tiles: Tiles) {
+make_tiles_with_piece_types :: proc(
+	piece_types: [BOARD_LENGTH][BOARD_LENGTH]Piece_Type
+) -> (
+	tiles: Tiles
+) {
 	for row, y in piece_types {
 		for piece_type, x in row {
 			tile_type: enum { Empty, White_Piece, Black_Piece } = .Empty
@@ -1322,7 +1484,7 @@ make_tiles_with_piece_types :: proc(piece_types: [BOARD_LENGTH][BOARD_LENGTH]Pie
 	return
 }
 
-MAX_ELEMENTS_FOR_MOVE_RESULTS :: 64
+MAX_ELEMENTS_FOR_MOVE_RESULTS :: BOARD_LENGTH * BOARD_LENGTH
 Move_Results :: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Move_Result)
 Move_Result :: struct {
 	move_piece_type: Piece_Type,
@@ -1365,26 +1527,29 @@ ALL_DIRECTIONS :: [8]Vec2i{
 }
 
 // Previously named get_possible_moves. Moves that are presented to player for a given piece (position)
-get_blind_moves :: proc(board: Board, pos: Position, player_color: Player_Color) -> Move_Results {
+get_blind_moves :: proc(
+	board: Board, 
+	pos: Position, 
+	player_color: Player_Color
+) -> 
+	Move_Results 
+{
 	_tile, _ := get_tile_by_position(board.tiles, pos)
 
 	if empty, ok := _tile.(Empty_Tile); ok {
 		return {}
 	}
 
-	// TODO: rename use piece
-	tile := _tile.(Piece)
+	piece := _tile.(Piece)
 
 	// aka color and top/bottom side factor
-	flip_factor: i32 = tile.color == .White ? 1 : -1
+	flip_factor: i32 = piece.color == .White ? 1 : -1
 	flip_factor *= g.is_white_bottom ? 1 : -1
 
 	arr: Move_Results
-	#partial top_switch: switch tile.type {
+	#partial top_switch: switch piece.type {
 	case .Pawn:
-		// CASE pawn en passants, forced move: if possible then this is player's only move
-		// TODO: refactor this to precede selection/move logic (for now keep here for testing)
-		// Must run this code before player selects a piece and notify him (highlight / tooltip / flashing piece / "En Passant Triggered")
+		// CASE pawn en passants, not a forced move
 
 		// this pawn is on 5th rank (white) or 4th rank (black)
 		is_pawn_on_passant_row_condition_satisfied: bool
@@ -1430,7 +1595,7 @@ get_blind_moves :: proc(board: Board, pos: Position, player_color: Player_Color)
 		} 
 
 		// cast ray of length 2 for first move
-		if !tile.has_moved {
+		if !piece.has_moved {
 			pos_1 := pos + move_direction * 2
 			tile_1, ray2_in_bounds := get_tile_by_position(board.tiles, pos_1)
 			tile_1_empty, tile_1_is_empty := tile_1.(Empty_Tile)
@@ -1484,7 +1649,8 @@ get_blind_moves :: proc(board: Board, pos: Position, player_color: Player_Color)
 		}
 		for rel_pos in relative_move_positions {
 			target_pos := pos + rel_pos * flip_factor
-			if target_tile, in_bounds := get_tile_by_position(board.tiles, target_pos); in_bounds {
+			target_tile, in_bounds := get_tile_by_position(board.tiles, target_pos)
+			if in_bounds {
 				switch _ in target_tile {
 				case Piece:
 					sa.push(&arr, Move_Result{
@@ -1631,38 +1797,63 @@ get_blind_moves :: proc(board: Board, pos: Position, player_color: Player_Color)
 				})
 			}
 		}
+		if board.can_queenside_castle[player_color] {
+			sa.push(&arr, Move_Result{
+				old_position = pos,
+				new_position = pos + {-2,0},
+				piece_action = .Queenside_Castle,
+				move_piece_type = .King,
+			})
+		}
+		if board.can_kingside_castle[player_color] {
+			sa.push(&arr, Move_Result{
+				old_position = pos,
+				new_position = pos + {2,0},
+				piece_action = .Kingside_Castle,
+				move_piece_type = .King,
+			})
+		}
 	}
 	return arr
 }
 
-get_threatened_positions_by_piece :: proc(board: Board, pos: Position, threatening_player: Player_Color) -> (threatened_positions: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Position), is_en_passant: bool) {
+get_threatened_positions_by_piece :: proc(
+	board: Board, 
+	pos: Position, 
+	threatening_player: Player_Color
+) -> (
+	threatened_positions: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Position), 
+	is_en_passant: bool
+) {
 	// Add standard blind moves first
-	// TODO: CSDR maybe they should be legal_moves instead since this is a private check, not presented to player like blind_moves which primarily used for get_moves_for_player
 	enemy_blind_moves := get_blind_moves(board, pos, threatening_player)
 	for enemy_blind_move in sa.slice(&enemy_blind_moves) {
-		// TODO: early return on en_passant
-		// TODO: collect all en_passants
-		if enemy_blind_move.move_piece_type == .Pawn && enemy_blind_move.piece_action == .Capture {
+		is_pawn := enemy_blind_move.move_piece_type == .Pawn
+		is_capture_action := enemy_blind_move.piece_action == .Capture
+		is_travel_action := enemy_blind_move.piece_action == .Travel
+
+		// Pawn Travel action cannot capture
+		if is_pawn && is_capture_action {
 			sa.append(&threatened_positions, enemy_blind_move.new_position)
-		} else if enemy_blind_move.move_piece_type != .Pawn && (enemy_blind_move.piece_action == .Travel || enemy_blind_move.piece_action == .Capture) {
+
+		// Rest of pieces Travel action can also capture
+		} else if !is_pawn && (is_travel_action || is_capture_action) {
 			sa.append(&threatened_positions, enemy_blind_move.new_position)
 		}
 	}
 
 	// Now get any additional positions being threatened by doing something similar to get_blind_moves for but including positions that are capturable by enemy pieces AND occupied by an enemy piece.
 
-	// TODO: rename, use piece
-	_tile, _ := get_tile_by_position(board.tiles, pos)
-	tile := _tile.(Piece) 
+	tile, _ := get_tile_by_position(board.tiles, pos)
+	piece := tile.(Piece) 
 
 	// aka color and top/bottom side factor
-	flip_factor: i32 = tile.color == .White ? 1 : -1
+	flip_factor: i32 = piece.color == .White ? 1 : -1
 	flip_factor *= g.is_white_bottom ? 1 : -1
 
 	arr: Move_Results
-	#partial top_switch: switch tile.type {
+	#partial top_switch: switch piece.type {
 	case .Pawn:
-		// TODO: cannot en passant if no enemy piece in capture position!!!
 		// this pawn is on 5th rank (white) or 4th rank (black)
 		is_pawn_on_passant_row_condition_satisfied: bool
 		if (pos.y == 4 && threatening_player == .White) || (pos.y == 3 && threatening_player == .Black) {
@@ -1703,8 +1894,9 @@ get_threatened_positions_by_piece :: proc(board: Board, pos: Position, threateni
 		relative_move_positions := KNIGHT_RELATIVE_MOVE_POSITIONS 
 		for rel_pos in relative_move_positions {
 			target_pos := pos + rel_pos * flip_factor
-			if target_tile, in_bounds := get_tile_by_position(board.tiles, target_pos); in_bounds {
-				if piece, is_piece := target_tile.(Piece); is_piece && piece.color == threatening_player {
+			target_tile, in_bounds := get_tile_by_position(board.tiles, target_pos)
+			if in_bounds {
+				if target_piece, is_piece := target_tile.(Piece); is_piece && target_piece.color == threatening_player {
 					sa.push(&threatened_positions, target_pos)
 				}
 			}
@@ -1720,8 +1912,8 @@ get_threatened_positions_by_piece :: proc(board: Board, pos: Position, threateni
 				if !in_bounds {
 					break bishop_ray
 				}
-				if piece, is_piece := target_tile.(Piece); is_piece {
-					if piece.color == threatening_player {
+				if target_piece, is_piece := target_tile.(Piece); is_piece {
+					if target_piece.color == threatening_player {
 						sa.push(&threatened_positions, target_pos)
 					}
 					break bishop_ray
@@ -1740,8 +1932,8 @@ get_threatened_positions_by_piece :: proc(board: Board, pos: Position, threateni
 					break rook_ray
 				}
 
-				if piece, is_piece := target_tile.(Piece); is_piece {
-					if piece.color == threatening_player {
+				if target_piece, is_piece := target_tile.(Piece); is_piece {
+					if target_piece.color == threatening_player {
 						sa.push(&threatened_positions, target_pos)
 					}
 					break rook_ray
@@ -1759,8 +1951,8 @@ get_threatened_positions_by_piece :: proc(board: Board, pos: Position, threateni
 				if !in_bounds {
 					break queen_ray
 				}
-				if piece, is_piece := target_tile.(Piece); is_piece {
-					if piece.color == threatening_player {
+				if target_piece, is_piece := target_tile.(Piece); is_piece {
+					if target_piece.color == threatening_player {
 						sa.push(&threatened_positions, target_pos)
 					}
 					break queen_ray
@@ -1776,8 +1968,8 @@ get_threatened_positions_by_piece :: proc(board: Board, pos: Position, threateni
 			if !in_bounds {
 				continue
 			}
-			if piece, is_piece := target_tile.(Piece); is_piece {
-				if piece.color == threatening_player {
+			if target_piece, is_piece := target_tile.(Piece); is_piece {
+				if target_piece.color == threatening_player {
 					sa.push(&threatened_positions, target_pos)
 				}
 				continue
@@ -1827,7 +2019,11 @@ ui_camera :: proc() -> rl.Camera2D {
 	}
 }
 
-draw_piece_on_board :: proc(piece_type: Piece_Type, piece_color: Piece_Color, tile_pos: Position) {
+draw_piece_on_board :: proc(
+	piece_type: Piece_Type, 
+	piece_color: Piece_Color, 
+	tile_pos: Position
+) {
 	render_pos := board_tile_pos_to_sprite_logical_render_pos(tile_pos.x, tile_pos.y)
 	tile_render_pos_x := i32(math.round(render_pos.x)) + 7
 	tile_render_pos_y := i32(math.round(render_pos.y)) + 7
