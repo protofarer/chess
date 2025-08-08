@@ -47,7 +47,8 @@ Game_Memory :: struct {
 	is_music_enabled: bool,
 	using board: Board,
 	time: Game_Time,
-	message: cstring,
+	message: string,
+	dead_position_message: string,
 }
 
 Game_Time :: struct {
@@ -82,7 +83,9 @@ Board :: struct {
 	is_check: bool,
 	is_checkmate: bool,
 	is_draw: bool,
-	draw_offered: [Player_Color]bool,
+	is_dead_position: bool,
+
+	draw_offered: [Player_Color]i32, // offered on turn number
 
 	turn_step: Turn_Step,
 
@@ -262,7 +265,7 @@ update :: proc() {
 
 	process_global_input()
 
-	if g.board.is_checkmate {
+	if g.board.gameover {
 		return
 	}
 	// next_scene: Maybe(Scene) = nil
@@ -276,10 +279,12 @@ update :: proc() {
 			action := process_play_input(&s)
 			proposed_move_result, is_move_proposed := propose_move(g.board, action)
 			if is_move_proposed {
-				move_result, is_legal := eval_move(g.board, proposed_move_result)
+				move_result, is_legal, message := eval_move(g.board, proposed_move_result)
 				if is_legal {
 					make_move(&g.board, move_result)
 					g.board.turn_step = .End
+				} else {
+					g.message = message
 				}
 			}
 
@@ -295,7 +300,7 @@ update :: proc() {
 
 // test for legality, if illegal emit message, else approve move
 eval_move :: proc(original_board: Board, proposed_move_result: Move_Result) -> (
-	move_result: Move_Result, is_legal: bool
+	move_result: Move_Result, is_legal: bool, message: string
 ) {
 	proposed_board := original_board
 	make_move(&proposed_board, proposed_move_result)
@@ -303,10 +308,9 @@ eval_move :: proc(original_board: Board, proposed_move_result: Move_Result) -> (
 
 	// Use instructive state from the evaluated proposed_board
 	if proposed_board.is_check {
-		g.message = "Illegal move: cannot move into a check position"
-		return {}, false
+		return {}, false, "Illegal move: cannot move into a check position"
 	}
-	return proposed_move_result, true
+	return proposed_move_result, true, ""
 }
 
 propose_move :: proc(board: Board, action: Play_Action) -> (
@@ -398,6 +402,7 @@ propose_move :: proc(board: Board, action: Play_Action) -> (
 
 }
 
+// TODO: don't access selected piece, pass relevant fields to function!
 make_move :: proc(board: ^Board, move_result: Move_Result) {
 	if move_result.piece_action == .None {
 		return
@@ -545,7 +550,8 @@ eval_board :: proc(board: ^Board) {
 																  board.current_player)
 	board.threatened_positions = get_threatened_all_positions_for_player(board^,
 																		 g.current_player)
-	board.legal_moves = get_legal_moves(g.current_player, 
+	board.legal_moves = get_legal_moves(g.board,
+										g.current_player, 
 										sa.slice(&board.threatened_positions),
 										sa.slice(&board.presented_player_moves))
 	/////////////////////////////////////////////////////////////////////////////////////
@@ -558,8 +564,8 @@ eval_board :: proc(board: ^Board) {
 	if is_king_threatened {
 		board.is_check = true
 
-		if !can_king_move(board^, board.current_player) {
-			pr("king cant move!")
+		if sa.len(board.legal_moves) == 0 {
+			pr("Game Over: Checkmate")
 			board.is_checkmate = true
 			board.gameover = true
 		}
@@ -567,10 +573,210 @@ eval_board :: proc(board: ^Board) {
 		board.is_check = false
 	}
 
-	// Stalemate
-	if sa.len(board.legal_moves) == 0 {
+	// Stalemate conditions
+
+	// No legal moves for either player
+	if !board.is_check && sa.len(board.legal_moves) == 0 {
+		pr("Game Over: Stalemate, no legal moves left for player")
+		g.message = "Stalemate: No legal moves available for player"
 		board.is_draw = true
 		board.gameover = true
+	}
+
+	// Mutual draw
+	draw_offer_black_turn := g.draw_offered[.Black]
+	draw_offer_white_turn := g.draw_offered[.White]
+	if draw_offer_black_turn > 0 && draw_offer_white_turn > 0 {
+		if abs(draw_offer_black_turn - draw_offer_white_turn) == 1{
+			pr("Game Over: Mutual Draw")
+			g.message = "Draw: A tie was agreed to"
+			g.gameover = true
+			g.is_draw = true
+		} else {
+			pr("Reset draw offers")
+			g.draw_offered[.Black] = 0
+			g.draw_offered[.White] = 0
+		}
+	}
+
+	// Dead position, show message, don't force
+
+	// get all white/black pieces, is len == 1 and king
+	pieces: [Player_Color]sa.Small_Array(16, Piece)
+	pieces[.White] = get_pieces_by_player(board.tiles, .White)
+	pieces[.Black] = get_pieces_by_player(board.tiles, .White)
+
+	is_only_king_left :: proc(player_pieces: []Piece) -> bool {
+		return len(player_pieces) == 1 && player_pieces[0].type == .King
+	}
+
+	is_king_only: [Player_Color]bool
+	is_king_only[.White] = is_only_king_left(sa.slice(&pieces[.White]))
+	is_king_only[.Black] = is_only_king_left(sa.slice(&pieces[.Black]))
+
+	// Case King v King
+	is_king_v_king := is_king_only[.White] && is_king_only[.Black]
+	if is_king_v_king {
+		g.is_dead_position = true
+		g.dead_position_message = "King versus King is a dead position. This is a draw."
+	}
+
+	// tst bish + king
+	is_only_king_bishop_left :: proc(player_pieces: []Piece) -> bool {
+		if len(player_pieces) == 2 && is_any_piece_type_from_pieces_slice(player_pieces, .Bishop) && is_any_piece_type_from_pieces_slice(player_pieces, .King) {
+			return true
+		}
+		return false
+	}
+
+	is_any_piece_type_from_pieces_slice :: proc(pieces: []Piece, piece_type: Piece_Type) -> bool {
+		for p in pieces {
+			if p.type == piece_type {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Case King Bishop v King
+	is_king_bishop_v_king: [Player_Color]bool
+	for pc in Player_Color {
+		other_pc := get_other_player_color(pc)
+		is_king_only_pc := is_king_only[pc]
+		is_other_king_bishop := is_only_king_bishop_left(sa.slice(&pieces[other_pc]))
+		if is_king_only_pc && is_only_king_bishop_left(sa.slice(&pieces[other_pc])) {
+			is_king_bishop_v_king[pc] = true
+		}
+	}
+	if is_king_bishop_v_king[.White] || is_king_bishop_v_king[.Black] {
+		g.is_dead_position = true
+		g.dead_position_message = "King versus King & Bishop is a dead position. Consider a draw."
+	}
+
+	Piece_Type_Counts :: map[Piece_Type]int
+	is_only_pieces_left_from_pieces_slice :: proc(player_pieces: []Piece, piece_types_counts: Piece_Type_Counts) -> bool {
+
+		// Create map from player_pieces
+		player_pieces_counts: Piece_Type_Counts
+		for p in player_pieces {
+			if _, ok := player_pieces_counts[p.type]; ok {
+				player_pieces_counts[p.type] += 1
+			} else {
+				player_pieces_counts[p.type] = 1
+			}
+		}
+
+		// Test and count while looping
+		piece_type_total_count: int
+		for piece_type, count in piece_types_counts {
+			if player_piece_count, ok := player_pieces_counts[piece_type]; ok {
+				// counts not the same for a piece type
+				if player_piece_count != count {
+					return false
+				}
+			// piece_type not in player_pieces
+			} else {
+				return false
+			}
+			piece_type_total_count += count
+		}
+
+		is_equal_count := len(player_pieces) == piece_type_total_count
+		if !is_equal_count {
+			return false
+		}
+
+		return true
+	}
+
+	// Case King Knight v King
+	is_king_knight_v_king: [Player_Color]bool
+
+	white_king_knight_map: Piece_Type_Counts
+	white_king_knight_map[.King] = 1
+	white_king_knight_map[.Knight] = 1
+	is_white_king_knight_only := is_only_pieces_left_from_pieces_slice(sa.slice(&pieces[.White]), white_king_knight_map)
+
+	black_king_knight_map: Piece_Type_Counts
+	black_king_knight_map[.King] = 1
+	black_king_knight_map[.Knight] = 1
+	is_black_king_knight_only := is_only_pieces_left_from_pieces_slice(sa.slice(&pieces[.Black]), black_king_knight_map)
+
+	if is_white_king_knight_only || is_black_king_knight_only {
+		g.is_dead_position = true
+		g.dead_position_message = "King versus King & Knight is a dead position. Consider a draw."
+	}
+
+
+	Tile_Color :: distinct Player_Color
+	get_tile_color :: proc(x, y: i32) -> Tile_Color {
+		// on even rows, odd column is black
+		if y % 2 == 0 && x % 2 == 1 {
+			return .Black
+		} else {
+			return .White
+		}
+	}
+
+	get_piece_by_position :: proc(tiles: Tiles, position: Position) -> (piece: Piece, is_piece: bool) {
+		tile, in_bounds := get_tile_by_position(tiles, position)
+		if !in_bounds {
+			return {}, false
+		}
+		if tile_piece, tile_is_piece := tile.(Piece); tile_is_piece {
+			return tile_piece, true
+		} 
+		return {}, false
+	}
+
+	is_king_bishop_v_king_bishop_same_color := false
+	// for both players:
+	// is 2 pieces left
+	// one is king other is bishop
+
+	// are both bishops same color? (get color of tile!)
+
+	white_king_bishop_map: Piece_Type_Counts
+	white_king_bishop_map[.King] = 1
+	white_king_bishop_map[.Bishop] = 1
+	is_white_king_bishop_only := is_only_pieces_left_from_pieces_slice(sa.slice(&pieces[.White]), white_king_bishop_map)
+
+	white_bishop_tile_color: Tile_Color
+	white_piece_positions := get_piece_positions_by_player(board.tiles, .White)
+	for pos in sa.slice(&white_piece_positions) {
+		piece, is_piece := get_piece_by_position(board.tiles, pos)
+		if is_piece && piece.type == .Bishop {
+			white_bishop_tile_color = get_tile_color(pos.x, pos.y)
+		}
+	}
+
+	black_king_bishop_map: Piece_Type_Counts
+	black_king_bishop_map[.King] = 1
+	black_king_bishop_map[.Bishop] = 1
+	is_black_king_bishop_only := is_only_pieces_left_from_pieces_slice(sa.slice(&pieces[.Black]), black_king_bishop_map)
+
+	black_bishop_tile_color: Tile_Color
+	black_piece_positions := get_piece_positions_by_player(board.tiles, .Black)
+	for pos in sa.slice(&black_piece_positions) {
+		piece, is_piece := get_piece_by_position(board.tiles, pos)
+		if is_piece && piece.type == .Bishop {
+			black_bishop_tile_color = get_tile_color(pos.x, pos.y)
+		}
+	}
+
+	if is_white_king_bishop_only && is_black_king_bishop_only && white_bishop_tile_color == black_bishop_tile_color {
+		g.is_dead_position = true
+		g.dead_position_message = "King & Bishop versus King & Bishop where bishops are same tile color is a dead position. Consider a draw."
+	}
+
+
+	get_pieces_of_type_from_slice :: proc(pieces: []Piece, piece_type: Piece_Type) -> (pieces_of_type: sa.Small_Array(8,Piece)) {
+		for piece in pieces {
+			if piece.type == piece_type {
+				sa.append(&pieces_of_type, piece)
+			}
+		}
+		return pieces_of_type
 	}
 
 	// TODO: refactor propose_move (and others?) so that state is set here and the other fns simple read the state, eg see how castling is done here.
@@ -750,24 +956,18 @@ get_moves_to_present_to_player :: proc(
 ) -> (
 	presented_moves: Move_Results
 ) {
-	piece_positions := get_piece_positions(board.tiles, player_color)
+	piece_positions := get_piece_positions_by_player(board.tiles, player_color)
 	for piece_position in sa.slice(&piece_positions) {
 		possible_moves := get_blind_moves(board, piece_position, player_color)
 		for move in sa.slice(&possible_moves) {
-			// must be only move then
-			if move.piece_action == .En_Passant {
-				sa.clear(&presented_moves)
-				sa.push(&presented_moves, move)
-				return
-			} else {
-				sa.push(&presented_moves, move)
-			}
+			sa.push(&presented_moves, move)
 		}
 	}
 	return
 }
 
 get_legal_moves :: proc(
+	original_board: Board,
 	player_color: Player_Color, 
 	threatened_positions: []Position, 
 	presented_player_moves: []Move_Result
@@ -775,16 +975,12 @@ get_legal_moves :: proc(
 	legal_moves: Move_Results
 ) {
 	outer_loop: for presented_move_result in presented_player_moves {
-		if presented_move_result.move_piece_type == .King {
-			for threatened_pos in threatened_positions {
-				if presented_move_result.new_position == threatened_pos {
-					continue outer_loop
-				}
-			}
+		move_result, is_move_legal, message := eval_move(original_board, presented_move_result)
+		if is_move_legal  {
 			sa.push(&legal_moves, presented_move_result)
 		}
 	}
-	return
+	return legal_moves
 }
 
 get_king_legal_moves :: proc(
@@ -866,7 +1062,7 @@ get_king_piece :: proc(tiles: Tiles, player_color: Player_Color) -> Piece {
 	return {}
 }
 
-get_piece_positions :: proc(
+get_piece_positions_by_player :: proc(
 	tiles: Tiles, player_color: Player_Color
 ) -> (
 	piece_positions: sa.Small_Array(16, Position)
@@ -881,6 +1077,21 @@ get_piece_positions :: proc(
 	return
 }
 
+get_pieces_by_player :: proc(
+	tiles: Tiles, player_color: Player_Color
+) -> (
+	pieces: sa.Small_Array(16, Piece)
+) {
+	for row, y in tiles {
+		for tile, x in row {
+			if piece, is_piece := tile.(Piece); is_piece && piece.color == player_color {
+				sa.push(&pieces, piece)
+			}
+		}
+	}
+	return pieces
+}
+
 get_threatened_all_positions_for_player :: proc(
 	board: Board, 
 	player_being_threatened: Player_Color
@@ -890,7 +1101,7 @@ get_threatened_all_positions_for_player :: proc(
 	// Cant use blind moves... it doesnt take into account all threatened positions
 
 	threatening_player := get_other_player_color(player_being_threatened)
-	enemy_piece_positions := get_piece_positions(board.tiles, threatening_player)
+	enemy_piece_positions := get_piece_positions_by_player(board.tiles, threatening_player)
 
 	set_of_threatened_positions: map[Position]Void
 	set_of_threatened_positions_en_passant: map[Position]Void
@@ -1069,25 +1280,25 @@ draw :: proc() {
 	}
 
 	rl.BeginMode2D(ui_camera())
-		// Transform mouse for gui
-		// offx, offy := get_viewport_offset()
-		// scale := get_viewport_scale()
-		// rl.SetMouseOffset(i32(offx), i32(offy))
-		// rl.SetMouseScale(1/scale, 1/scale)
-
 		// Top Status Bar
 		{
 			rl.GuiStatusBar({0,0,LOGICAL_SCREEN_WIDTH, TOPBAR_HEIGHT}, "")
 			y :f32= 4
 			if rl.GuiButton({5,y,70,15}, "New Game") do pr("Click New Game")
-			if rl.GuiButton({100,y,70,15}, "Draw") do pr("Click Draw")
+			if rl.GuiButton({100,y,70,15}, "Draw") {
+				pr("Click Draw")
+				g.draw_offered[g.current_player] = g.n_turns
+				g.turn_step = .End
+			}
 			rl.DrawText(make_duration_display_string(get_game_duration()), 220, 7, 8, rl.WHITE)
 			rl.DrawText(fmt.ctprintf("Turn: %v", g.board.n_turns), 300, 7, 8, rl.WHITE)
 			if rl.GuiButton({450,y,70,15}, "Exit") {
 				 pr("Click Exit")
 				 g.app_state = .Exit
 			}
-			rl.DrawText(g.message, 180, 27, 8, rl.RED)
+
+			top_bar_message := fmt.ctprintf("%v %v", g.message, g.dead_position_message)
+			rl.DrawText(top_bar_message, 180, 27, 8, rl.RED)
 		}
 
 		// White Panel (Left)
@@ -1161,10 +1372,17 @@ draw :: proc() {
 		}
 
 		// Draw Checkmate / Gameover state
-		if g.board.is_checkmate {
-			winner := get_other_player_color(g.current_player)
-			t := fmt.ctprintf("Checkmate! %v wins!", winner)
-			rl.DrawText(t, 200,200, 16, rl.RED)
+		if g.gameover {
+			if g.is_checkmate {
+				winner := get_other_player_color(g.current_player)
+				t := fmt.ctprintf("Checkmate! %v wins!", winner)
+				rl.DrawText(t,140,180, 24, rl.RED)
+			} else if g.is_draw {
+				t := fmt.ctprintf("- Draw -")
+				rl.DrawText(t, 250,180, 24, rl.RED)
+
+			}
+
 		}
 	rl.EndMode2D()
 
@@ -1251,6 +1469,10 @@ draw :: proc() {
 							selected_piece_type_text),
 				fmt.tprintf("selected_piece has_moved: %v", 
 							sp_has_moved),
+				fmt.tprintf("draw_offered_white: %v", 
+							g.draw_offered[.White]),
+				fmt.tprintf("draw_offered_black: %v", 
+							g.draw_offered[.Black]),
 			}
 			y += 40
 			debug_overlay_text_column(&x, &y, arr3[:])
