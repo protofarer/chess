@@ -1,10 +1,14 @@
 package game
 
 Texture_ID :: enum {
-	Player,
+	King,
+	Queen,
+	Pawn,
+	Rook,
+	Bishop,
+	Knight,
 }
 
 Sound_ID :: enum {
-	Powerup,
 	Music,
 }

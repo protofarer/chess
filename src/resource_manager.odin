@@ -19,7 +19,7 @@ Resource_Manager :: struct {
     base_sound_path: string,
     // fonts: [Font_ID]rl.Font,
     // base_font_path: string,
-    // transparency_color: rl.Color,
+    transparency_color: rl.Color,
 }
 
 setup_resource_manager :: proc(rm: ^Resource_Manager) {
@@ -27,7 +27,7 @@ setup_resource_manager :: proc(rm: ^Resource_Manager) {
     rm.base_texture_path = "assets/"
     rm.base_sound_path = "assets/"
     // rm.base_font_path = "assets/fonts/"
-    // rm.transparency_color = rl.WHITE
+    rm.transparency_color = {43, 255, 213, 255} // teal
 }
 
 load_all_assets :: proc(rm: ^Resource_Manager) -> bool {
@@ -92,7 +92,7 @@ load_texture :: proc(rm: ^Resource_Manager, id: Texture_ID) -> Resource_Load_Res
         return .File_Not_Found
     }
     // Apply transparency processing
-    // rl.ImageColorReplace(&image, rm.transparency_color, rl.BLANK)
+    rl.ImageColorReplace(&image, rm.transparency_color, rl.BLANK)
     texture := rl.LoadTextureFromImage(image)
     if texture.id == 0 {
         rl.UnloadImage(image)

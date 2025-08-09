@@ -32,7 +32,7 @@ TICK_RATE :: 60
 
 
 BACKGROUND_COLOR :: rl.GRAY
-DARK_TILE_COLOR :: rl.LIGHTGRAY
+DARK_TILE_COLOR :: rl.Color{40,160,40,255}
 LIGHT_TILE_COLOR :: rl.WHITE
 
 BOARD_LENGTH :: 8
@@ -1188,11 +1188,46 @@ draw :: proc() {
 			}
 		}
 
+		get_texture_by_piece_type :: proc(piece_type: Piece_Type) -> rl.Texture2D {
+			switch piece_type {
+			case .King:
+				return get_texture(.King)
+			case .Queen:
+				return get_texture(.Queen)
+			case .Pawn:
+				return get_texture(.Pawn)
+			case .Rook:
+				return get_texture(.Rook)
+			case .Bishop:
+				return get_texture(.Bishop)
+			case .Knight:
+				return get_texture(.Knight)
+			case .None:
+				return {}
+			}
+			return {}
+		}
+
 		// Draw pieces
 		for row, y in g.board.tiles {
 			for tile, x in row {
 				if piece, is_piece := tile.(Piece); is_piece {
-					draw_piece_on_board(piece.type, piece.color, {i32(x),i32(y)})
+					// get texture
+					tex := get_texture_by_piece_type(piece.type)
+
+					// get sprite render origin
+					render_pos := board_tile_pos_to_sprite_logical_render_pos(i32(x), i32(y))
+					tile_render_pos_x := i32(math.round(render_pos.x))
+					tile_render_pos_y := i32(math.round(render_pos.y))
+
+					// set src/dst rectangels
+					src_rect := Rec{0,0,f32(tex.width), f32(tex.height)}
+					dst_rect := Rec{f32(tile_render_pos_x), f32(tile_render_pos_y), f32(TILE_SIZE), f32(TILE_SIZE)}
+					tint := piece.color == .White ? rl.RAYWHITE : rl.DARKGRAY
+					rl.DrawTexturePro(tex, src_rect, dst_rect, {}, 0, tint)
+
+					// DrawTexturePro
+					// draw_piece_on_board(piece.type, piece.color, {i32(x),i32(y)})
 				}
 			}
 		}
