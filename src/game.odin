@@ -304,12 +304,17 @@ eval_move :: proc(original_board: Board, proposed_move_result: Move_Result) -> (
 ) {
 	proposed_board := original_board
 	make_move(&proposed_board, proposed_move_result)
-	eval_board(&proposed_board)
 
-	// Use instructive state from the evaluated proposed_board
-	if proposed_board.is_check {
+	threatened_positions := get_threatened_all_positions_for_player(proposed_board,
+																    proposed_board.current_player)
+	is_king_threatened := is_position_threatened(sa.slice(&threatened_positions),
+												 get_king_position(proposed_board.tiles, 
+												 proposed_board.current_player))
+	// is_check, illegal move
+	if is_king_threatened {
 		return {}, false, "Illegal move: cannot move into a check position"
 	}
+
 	return proposed_move_result, true, ""
 }
 
@@ -402,50 +407,48 @@ propose_move :: proc(board: Board, action: Play_Action) -> (
 
 }
 
-// TODO: don't access selected piece, pass relevant fields to function!
 make_move :: proc(board: ^Board, move_result: Move_Result) {
 	if move_result.piece_action == .None {
 		return
 	}
-	pr("Action: Piece_Action")
+	// pr("make_move, move_result:", move_result)
 
-	selected_piece := g.selected_piece.?
+	selected_piece, is_piece := get_piece_by_position(board.tiles, move_result.old_position)
+	if !is_piece {
+		log.error("Failed to get Piece from position for make_move")
+	}
+	selected_piece_old_position := move_result.old_position
 
 	switch move_result.piece_action {
 	case .Travel:
-		pr("TRAVEL")
 		// Update the selected piece and store in new position
-		selected_piece_piece := selected_piece.piece
-
 		// update double move data before has_piece_moved is flagged
-		if selected_piece_piece.type == .Pawn && !selected_piece_piece.has_moved && abs(move_result.new_position.y - selected_piece.position.y) == 2 {
+		if selected_piece.type == .Pawn && !selected_piece.has_moved && abs(move_result.new_position.y - selected_piece_old_position.y) == 2 {
 			board.last_double_move_turn = board.n_turns
 			board.last_double_move_end_position = move_result.new_position
 		}
 
-		curr_pos := selected_piece.position
+		curr_pos := selected_piece_old_position
 		set_tile(&board.tiles, curr_pos, Empty_Tile{})
 
-		new_tile := selected_piece_piece
+		new_tile := selected_piece
 		new_tile.has_moved = true
 		new_pos := move_result.new_position
 		set_tile(&board.tiles, new_pos, new_tile)
 
 	case .En_Passant:
-		// Captured piece is in en passant capture position
-		pr("EN PASSANT")
-		curr_pos := selected_piece.position
+		// Captured piece is in a special en passant capture position
+		curr_pos := selected_piece_old_position
 		set_tile(&board.tiles, curr_pos, Empty_Tile{})
 
 		new_pos := move_result.new_position
 
 		captured_position := g.last_double_move_end_position
-		captured_tile, _ := get_tile_by_position(board.tiles, captured_position)
-		captured_piece := captured_tile.(Piece)
+		captured_piece, _ := get_piece_by_position(board.tiles, captured_position)
 		sa.push(&board.captures[g.current_player], captured_piece.type)
 		set_tile(&board.tiles, captured_position, Empty_Tile{})
 
-		new_tile := selected_piece.piece
+		new_tile := selected_piece
 		new_tile.has_moved = true
 		set_tile(&board.tiles, new_pos, new_tile)
 
@@ -453,31 +456,27 @@ make_move :: proc(board: ^Board, move_result: Move_Result) {
 
 	case .Capture:
 		// Captured piece is in selected piece's new position
-		pr("CAPTURE")
-		curr_pos := selected_piece.position
+		curr_pos := selected_piece_old_position
 		set_tile(&board.tiles, curr_pos, Empty_Tile{})
 
 		new_pos := move_result.new_position
 
-		captured_tile, _ := get_tile_by_position(board.tiles, new_pos)
-		captured_piece := captured_tile.(Piece)
+		captured_piece, _ := get_piece_by_position(board.tiles, new_pos)
 		sa.push(&board.captures[g.current_player], captured_piece.type)
 
-		new_tile := selected_piece.piece
+		new_tile := selected_piece
 		new_tile.has_moved = true
 		set_tile(&board.tiles, new_pos, new_tile)
 
 		update_points(board, board.current_player, captured_piece.type)
 
 	case .Kingside_Castle:
-		pr("KINGSIDE CASTLE")
 		// Update the selected piece and store in new position
-		selected_piece_piece := selected_piece.piece
 
-		curr_king_pos := selected_piece.position
+		curr_king_pos := selected_piece_old_position
 		set_tile(&board.tiles, curr_king_pos, Empty_Tile{})
 
-		new_king_piece := selected_piece_piece
+		new_king_piece := selected_piece
 		new_king_piece.has_moved = true
 		new_king_pos := move_result.new_position
 		set_tile(&board.tiles, new_king_pos, new_king_piece)
@@ -489,8 +488,7 @@ make_move :: proc(board: ^Board, move_result: Move_Result) {
 		} else {
 			rook_pos = BLACK_KINGSIDE_ROOK_POSITION
 		}
-		rook_tile, _ := get_tile_by_position(board.tiles, rook_pos)
-		rook_piece, _ := rook_tile.(Piece)
+		rook_piece, _ := get_piece_by_position(board.tiles, rook_pos)
 		set_tile(&board.tiles, rook_pos, Empty_Tile{})
 
 		new_rook_piece := rook_piece
@@ -499,14 +497,12 @@ make_move :: proc(board: ^Board, move_result: Move_Result) {
 		set_tile(&board.tiles, new_rook_pos, new_rook_piece)
 
 	case .Queenside_Castle:
-		pr("QUEENSIDE CASTLE")
 		// Update the selected piece and store in new position
-		selected_piece_piece := selected_piece.piece
 
-		curr_king_pos := selected_piece.position
+		curr_king_pos := selected_piece_old_position
 		set_tile(&board.tiles, curr_king_pos, Empty_Tile{})
 
-		new_king_piece := selected_piece_piece
+		new_king_piece := selected_piece
 		new_king_piece.has_moved = true
 		new_king_pos := move_result.new_position
 		set_tile(&board.tiles, new_king_pos, new_king_piece)
@@ -518,8 +514,7 @@ make_move :: proc(board: ^Board, move_result: Move_Result) {
 		} else {
 			rook_pos = BLACK_QUEENSIDE_ROOK_POSITION
 		}
-		rook_tile, _ := get_tile_by_position(board.tiles, rook_pos)
-		rook_piece, _ := rook_tile.(Piece)
+		rook_piece, _ := get_piece_by_position(board.tiles, rook_pos)
 		set_tile(&board.tiles, rook_pos, Empty_Tile{})
 
 		new_rook_piece := rook_piece
@@ -555,6 +550,7 @@ eval_board :: proc(board: ^Board) {
 										sa.slice(&board.threatened_positions),
 										sa.slice(&board.presented_player_moves))
 	/////////////////////////////////////////////////////////////////////////////////////
+	pr("PAST LEGAL MOVES")
 
 	// Check and Checkmate
 
@@ -1757,6 +1753,18 @@ get_tile_by_position :: proc(tiles: Tiles, pos: Position) -> (tile: Tile, in_bou
 		return {}, false
 	}
 	return tiles[pos.y][pos.x], true
+}
+
+get_piece_by_position :: proc(tiles: Tiles, pos: Position) -> (piece: Piece, is_piece: bool) {
+	tile, in_bounds := get_tile_by_position(tiles, pos)
+	if !in_bounds {
+		return {}, false
+	}
+	if tile_piece, piece_ok := tile.(Piece); piece_ok {
+		return tile_piece, true
+	}
+	return {}, false
+
 }
 
 init_board :: proc() -> Board {
