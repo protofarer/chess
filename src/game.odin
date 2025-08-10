@@ -30,7 +30,6 @@ WINDOW_W :: 1600
 WINDOW_H :: 900
 TICK_RATE :: 60
 
-
 BACKGROUND_COLOR :: rl.GRAY
 DARK_TILE_COLOR :: rl.Color{40,160,40,255}
 LIGHT_TILE_COLOR :: rl.WHITE
@@ -167,7 +166,7 @@ PIECE_POINTS := [Piece_Type]i32{
 
 g: ^Game_Memory
 
-// Run once: allocate, set global variable immutable values
+// Run once: allocate, set global variable values used like constants
 setup :: proc() {
 	context.logger = log.create_console_logger(nil, {
         // .Level,
@@ -178,13 +177,15 @@ setup :: proc() {
         .Time,
 	})
 
-	// rl.InitAudioDevice()
-	// audman := init_audio_manager()
+	rl.InitAudioDevice() // before resman init
 
 	resman := new(Resource_Manager)
 	setup_resource_manager(resman)
 	load_all_assets(resman)
+
 	rl.GuiLoadStyle("assets/style_amber.rgs")
+
+	audman := init_audio_manager()
 
 	g = new(Game_Memory)
 	g^ = Game_Memory {
@@ -193,7 +194,7 @@ setup :: proc() {
 			LOGICAL_SCREEN_WIDTH * RENDER_TEXTURE_SCALE, 
 			LOGICAL_SCREEN_HEIGHT * RENDER_TEXTURE_SCALE
 		),
-		// audman = audman,
+		audman = audman,
 	}
 
 	offx, offy := get_viewport_offset()
@@ -209,7 +210,6 @@ init :: proc() {
 	g.scene = Play_Scene{}
 	g.is_music_enabled = true
 	g.board = init_board()
-
 
 	// TEST BOARDS
 	// g.board = test_init_white_checked_board()
@@ -262,6 +262,7 @@ Turn_Step :: enum {
 }
 
 update :: proc() {
+	update_audio_manager()
 
 	process_global_input()
 
@@ -277,11 +278,14 @@ update :: proc() {
 
 		} else if g.board.turn_step == .Try_Move {
 			action := process_play_input(&s)
+
+			// TODO: rename this, it is not proposing a move. There needs to be a better name or a different function because currently it handles piece select/deselect. Need separation of concern here, especially for clarity of user action and colocating playing sounds
 			proposed_move_result, is_move_proposed := propose_move(g.board, action)
 			if is_move_proposed {
 				move_result, is_legal, message := eval_move(g.board, proposed_move_result)
 				if is_legal {
 					make_move(&g.board, move_result)
+					play_sfx(.Drop)
 					g.board.turn_step = .End
 				} else {
 					g.message = message
@@ -342,6 +346,7 @@ propose_move :: proc(board: Board, action: Play_Action) -> (
 													 g.current_player),
 				}
 				g.selected_piece = new_selected_piece
+				play_sfx(.Pickup)
 				pr("Action: Select_Piece")
 			} else {
 				pr("Action: None")
@@ -356,6 +361,7 @@ propose_move :: proc(board: Board, action: Play_Action) -> (
 			if is_piece && clicked_piece.color == g.current_player {
 				if selected_piece.position == mouse_tile_pos {
 					g.selected_piece = nil
+					play_sfx(.Drop)
 					pr("Action: DeSelect_Piece")
 				} else {
 					new_selected_piece := Selected_Piece_Data{
@@ -366,6 +372,7 @@ propose_move :: proc(board: Board, action: Play_Action) -> (
 														 g.current_player),
 					}
 					g.selected_piece = new_selected_piece
+					play_sfx(.Pickup)
 					pr("Action: Select_Piece")
 				}
 				move_result = {}
@@ -393,6 +400,7 @@ propose_move :: proc(board: Board, action: Play_Action) -> (
 			// B. If clicked tile not a possible move
 			g.selected_piece = nil
 			pr("Action: Deselect_Piece")
+			play_sfx(.Drop)
 			is_move_proposed = false
 			return
 		}
@@ -550,7 +558,6 @@ eval_board :: proc(board: ^Board) {
 										sa.slice(&board.threatened_positions),
 										sa.slice(&board.presented_player_moves))
 	/////////////////////////////////////////////////////////////////////////////////////
-	pr("PAST LEGAL MOVES")
 
 	// Check and Checkmate
 

@@ -10,5 +10,6 @@ Texture_ID :: enum {
 }
 
 Sound_ID :: enum {
-	Music,
+	Pickup,
+	Drop,
 }

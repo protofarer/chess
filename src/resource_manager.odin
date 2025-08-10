@@ -98,6 +98,7 @@ load_texture :: proc(rm: ^Resource_Manager, id: Texture_ID) -> Resource_Load_Res
         rl.UnloadImage(image)
         return .Memory_Error
     }
+	// rl.SetTextureFilter(texture, .BILINEAR )
     rm.textures[id] = texture
     rl.UnloadImage(image)
     return .Success
