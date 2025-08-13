@@ -34,6 +34,9 @@ BACKGROUND_COLOR :: rl.GRAY
 DARK_TILE_COLOR :: rl.Color{40,160,40,255}
 LIGHT_TILE_COLOR :: rl.WHITE
 
+WHITE_PIECE_COLOR :: rl.RAYWHITE
+BLACK_PIECE_COLOR :: rl.DARKGRAY
+
 BOARD_LENGTH :: 8
 
 Game_Memory :: struct {
@@ -96,6 +99,8 @@ Board :: struct {
 	legal_moves: Move_Results,
 	presented_player_moves: Move_Results,
 	gameover: bool,
+
+	tile_pos_to_promote: Maybe(Position),
 }
 
 Tiles :: [BOARD_LENGTH][BOARD_LENGTH]Tile
@@ -195,6 +200,7 @@ setup :: proc() {
 		),
 		audman = audman,
 	}
+	setup_promotion_piece_data(g_promotion_piece_data[:])
 
 	update_mouse_transform()
 }
@@ -206,6 +212,8 @@ init :: proc() {
 	g.scene = Play_Scene{}
 	g.is_music_enabled = true
 	g.board = init_board()
+
+	// TODO: init_promotion_piece :: piece click rects
 
 	// TEST BOARDS
 	// g.board = test_init_white_checked_board()
@@ -223,6 +231,8 @@ init :: proc() {
 	// g.board = test_init_board_king_v_king_knight()
 	// g.board = test_init_board_king_bishop_v_king_bishop_same_color_bishop_black()
 	// g.board = test_init_board_king_bishop_v_king_bishop_same_color_bishop_white()
+	g.board = test_init_board_promotion_white()
+	// g.board = test_init_board_promotion_black()
 
 	// TEST CAPTURES
 	// sa.push(&g.board.captures[.White],
@@ -260,6 +270,7 @@ init :: proc() {
 Turn_Step :: enum {
 	Eval, // start here
 	Try_Move, // loop until legal move
+	Post_Move, // select promotion piece
 	End, // ends here
 }
 
@@ -275,11 +286,13 @@ update :: proc() {
 	// next_scene: Maybe(Scene) = nil
 	switch &s in g.scene {
 	case Play_Scene:
-		if g.board.turn_step == .Eval {
+		switch g.board.turn_step {
+
+		case .Eval:
 			eval_board(&g.board)
 			g.board.turn_step = .Try_Move
 
-		} else if g.board.turn_step == .Try_Move {
+		case .Try_Move:
 			action := process_play_input(&s)
 
 			// TODO: rename this, it is not proposing a move. There needs to be a better name or a different function because currently it handles piece select/deselect. Need separation of concern here, especially for clarity of user action and colocating playing sounds
@@ -289,13 +302,56 @@ update :: proc() {
 				if is_legal {
 					make_move(&g.board, move_result)
 					play_sfx(.Drop)
-					g.board.turn_step = .End
+
+					eval_promotion :: proc(board: ^Board) -> bool {
+						// if pawn in promotion row -> Post_Move
+						// check promotion row for pawns. Can only be 1 pawn to promote, logically.
+						promotion_row_index := g.current_player == .White ?  BOARD_LENGTH - 1 : 0
+						for tile, x in g.board.tiles[promotion_row_index] {
+							piece, is_piece := tile.(Piece)
+							if is_piece && piece.type == .Pawn && piece.color == g.current_player {
+								g.board.tile_pos_to_promote = Position{i32(x),i32(promotion_row_index)}
+							}
+						}
+						if pos, ok := g.tile_pos_to_promote.(Position); ok {
+							return true
+						} 
+						return false
+					}
+
+					if promotion_available := eval_promotion(&g.board); promotion_available {
+							g.board.turn_step = .Post_Move
+					} else {
+						g.board.turn_step = .End
+					}
+
 				} else {
 					g.message = message
 				}
 			}
 
-		} else if g.board.turn_step == .End {
+		case .Post_Move:
+			if pos_to_promote, ok_pos := g.board.tile_pos_to_promote.(Position); ok_pos {
+				for data, i in g_promotion_piece_data {
+					// TODO: integrate this with existing process_play_input?
+					if rl.IsMouseButtonPressed(.LEFT) && is_mouse_over_rect(data.rect.x, data.rect.y, data.rect.width, data.rect.height) {
+						piece_type := data.piece_type
+						piece_color := g.current_player
+						pr("Clicked on promote piece type:", piece_type)
+						set_tile(&g.board.tiles, pos_to_promote, Piece{
+							type = piece_type, 
+							color = piece_color, 
+							has_moved = true
+						})
+						g.board.tile_pos_to_promote = nil
+						g.board.turn_step = .End
+					}
+				}
+			} else {
+				g.board.turn_step = .End
+			}
+
+		case .End:
 			end_turn(&g.board, &g.time)
 			g.board.turn_step = .Eval
 		}
@@ -579,7 +635,7 @@ eval_board :: proc(board: ^Board) {
 
 	// Stalemate conditions
 
-	// No legal moves for either player
+	// No legal moves for either single player
 	if !board.is_check && sa.len(board.legal_moves) == 0 {
 		pr("Game Over: Stalemate, no legal moves left for player")
 		g.message = "Stalemate: No legal moves available for player"
@@ -1177,26 +1233,6 @@ draw :: proc() {
 			}
 		}
 
-		get_texture_by_piece_type :: proc(piece_type: Piece_Type) -> rl.Texture2D {
-			switch piece_type {
-			case .King:
-				return get_texture(.King)
-			case .Queen:
-				return get_texture(.Queen)
-			case .Pawn:
-				return get_texture(.Pawn)
-			case .Rook:
-				return get_texture(.Rook)
-			case .Bishop:
-				return get_texture(.Bishop)
-			case .Knight:
-				return get_texture(.Knight)
-			case .None:
-				return {}
-			}
-			return {}
-		}
-
 		// Draw pieces
 		for row, y in g.board.tiles {
 			for tile, x in row {
@@ -1212,7 +1248,7 @@ draw :: proc() {
 					// set src/dst rectangels
 					src_rect := Rec{0,0,f32(tex.width), f32(tex.height)}
 					dst_rect := Rec{f32(tile_render_pos_x), f32(tile_render_pos_y), f32(TILE_SIZE), f32(TILE_SIZE)}
-					tint := piece.color == .White ? rl.RAYWHITE : rl.DARKGRAY
+					tint := piece.color == .White ? WHITE_PIECE_COLOR : BLACK_PIECE_COLOR
 					rl.DrawTexturePro(tex, src_rect, dst_rect, {}, 0, tint)
 
 					// DrawTexturePro
@@ -1388,6 +1424,20 @@ draw :: proc() {
 				}
 				ycap += 30
 				draw_piece(piece_type, .White, xcap,ycap)
+			}
+		}
+
+		if g.turn_step == .Post_Move {
+			rl.DrawRectangle(i32(g_promotion_piece_data[0].rect.x),i32(g_promotion_piece_data[0].rect.y), i32(TILE_SIZE * 1.1 * len(g_promotion_piece_data)), i32(TILE_SIZE * 1.1), rl.LIGHTGRAY)
+
+			for data, i in g_promotion_piece_data {
+				tex := get_texture_by_piece_type(data.piece_type)
+				x := data.rect.x
+				y := data.rect.y
+				src_rect := Rec{0,0,f32(tex.width), f32(tex.height)}
+				dst_rect := Rec{f32(x), f32(y), f32(data.rect.width), f32(data.rect.height)}
+				tint := g.current_player == .White ? WHITE_PIECE_COLOR : BLACK_PIECE_COLOR
+				rl.DrawTexturePro(tex, src_rect, dst_rect, {}, 0, tint)
 			}
 		}
 
@@ -2668,4 +2718,77 @@ update_mouse_transform :: proc() {
 	scale := get_viewport_scale()
 	rl.SetMouseOffset(i32(offx), i32(offy))
 	rl.SetMouseScale(1/scale, 1/scale)
+}
+
+test_init_board_promotion_white :: proc() -> Board {
+	piece_types := BLANK_TILES
+	piece_types[0][4] = .King
+	piece_types[7][4] = .King
+	tiles := make_tiles_with_piece_types(piece_types)
+	tiles[6][0] = Piece{
+		type = .Pawn,
+		color = .White,
+		has_moved = true,
+	}
+	return make_board_from_tiles(tiles)
+}
+
+test_init_board_promotion_black :: proc() -> Board {
+	piece_types := BLANK_TILES
+	piece_types[0][4] = .King
+	piece_types[7][4] = .King
+	tiles := make_tiles_with_piece_types(piece_types)
+	tiles[1][0] = Piece{
+		type = .Pawn,
+		color = .Black,
+		has_moved = true,
+	}
+	return make_board_from_tiles(tiles)
+}
+
+get_texture_by_piece_type :: proc(piece_type: Piece_Type) -> rl.Texture2D {
+	switch piece_type {
+	case .King:
+		return get_texture(.King)
+	case .Queen:
+		return get_texture(.Queen)
+	case .Pawn:
+		return get_texture(.Pawn)
+	case .Rook:
+		return get_texture(.Rook)
+	case .Bishop:
+		return get_texture(.Bishop)
+	case .Knight:
+		return get_texture(.Knight)
+	case .None:
+		return {}
+	}
+	return {}
+}
+
+// Draw window to select promotion piece type
+Promotion_Piece_Data :: struct {
+	piece_type: Piece_Type,
+	rect: Rec,
+}
+
+g_promotion_piece_data: [4]Promotion_Piece_Data
+
+setup_promotion_piece_data :: proc(data: []Promotion_Piece_Data) {
+	PROMOTION_PIECES := [?]Piece_Type{.Queen,.Rook,.Bishop,.Knight}
+
+	x0 :f32= (LOGICAL_SCREEN_WIDTH / 2) - (2 * TILE_SIZE * 1.1)
+	y0 :f32= LOGICAL_SCREEN_HEIGHT / 2
+
+	for type, i in PROMOTION_PIECES {
+		data[i] = Promotion_Piece_Data{
+			piece_type = type,
+			rect = {
+				x = x0 + (f32(i) * TILE_SIZE * 1.1),
+				y = y0,
+				width = TILE_SIZE,
+				height = TILE_SIZE,
+			}
+		}
+	}
 }
