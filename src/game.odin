@@ -168,6 +168,13 @@ PIECE_POINTS := [Piece_Type]i32{
 	.King = 0,
 }
 
+Turn_Step :: enum {
+	Eval, // start here
+	Try_Move, // loop until legal move
+	Post_Move, // select promotion piece
+	End, // ends here
+}
+
 g: ^Game_Memory
 
 // Run once: allocate, set global variable values used like constants
@@ -212,8 +219,6 @@ init :: proc() {
 	g.scene = Play_Scene{}
 	g.is_music_enabled = true
 	g.board = init_board()
-
-	// TODO: init_promotion_piece :: piece click rects
 
 	// TEST BOARDS
 	// g.board = test_init_white_checked_board()
@@ -266,12 +271,20 @@ init :: proc() {
 	g.is_white_bottom = true
 }
 
-// CSDR Turn_Step?
-Turn_Step :: enum {
-	Eval, // start here
-	Try_Move, // loop until legal move
-	Post_Move, // select promotion piece
-	End, // ends here
+eval_promotion :: proc(board: ^Board) -> bool {
+	// if pawn in promotion row -> Post_Move
+	// check promotion row for pawns. Can only be 1 pawn to promote, logically.
+	promotion_row_index := g.current_player == .White ?  BOARD_LENGTH - 1 : 0
+	for tile, x in g.board.tiles[promotion_row_index] {
+		piece, is_piece := tile.(Piece)
+		if is_piece && piece.type == .Pawn && piece.color == g.current_player {
+			g.board.tile_pos_to_promote = Position{i32(x),i32(promotion_row_index)}
+		}
+	}
+	if pos, ok := g.tile_pos_to_promote.(Position); ok {
+		return true
+	} 
+	return false
 }
 
 update :: proc() {
@@ -302,22 +315,6 @@ update :: proc() {
 				if is_legal {
 					make_move(&g.board, move_result)
 					play_sfx(.Drop)
-
-					eval_promotion :: proc(board: ^Board) -> bool {
-						// if pawn in promotion row -> Post_Move
-						// check promotion row for pawns. Can only be 1 pawn to promote, logically.
-						promotion_row_index := g.current_player == .White ?  BOARD_LENGTH - 1 : 0
-						for tile, x in g.board.tiles[promotion_row_index] {
-							piece, is_piece := tile.(Piece)
-							if is_piece && piece.type == .Pawn && piece.color == g.current_player {
-								g.board.tile_pos_to_promote = Position{i32(x),i32(promotion_row_index)}
-							}
-						}
-						if pos, ok := g.tile_pos_to_promote.(Position); ok {
-							return true
-						} 
-						return false
-					}
 
 					if promotion_available := eval_promotion(&g.board); promotion_available {
 							g.board.turn_step = .Post_Move
@@ -618,10 +615,10 @@ eval_board :: proc(board: ^Board) {
 
 	// Check and Checkmate
 
-	is_king_threatened := is_position_threatened(sa.slice(&board.threatened_positions),
+	is_check := is_position_threatened(sa.slice(&board.threatened_positions),
 												 get_king_position(board.tiles, 
 												 board.current_player))
-	if is_king_threatened {
+	if is_check {
 		board.is_check = true
 
 		if sa.len(board.legal_moves) == 0 {
@@ -840,13 +837,10 @@ eval_board :: proc(board: ^Board) {
 
 	// TODO: refactor propose_move (and others?) so that state is set here and the other fns simple read the state, eg see how castling is done here.
 
-
 	// Castling Conditions:
 	// - king not in check
 	// - king & rook cannot have moved
 	// - king move-through and final position must have no piece, nor under threat
-
-	// TODO: only eval for current player
 
 	g.can_queenside_castle[board.current_player] = is_castle_available(
 			board.current_player == .White ? WHITE_KING_POSITION : BLACK_KING_POSITION,
@@ -1179,159 +1173,21 @@ get_threatened_all_positions_for_player :: proc(
 	return threatened_positions
 }
 
-// Filtered moves aka only moves player can take, as opposed to all possible (blind) moves without restriction
-// - if en passant available, must take it
-// - ...
-
-TOPBAR_HEIGHT :: 40
-BOARD_RENDER_LENGTH: f32 : f32(LOGICAL_SCREEN_HEIGHT) - f32(TOPBAR_HEIGHT)
-
-BOARD_BOUNDS :: Rec{
-	(LOGICAL_SCREEN_WIDTH - BOARD_RENDER_LENGTH) / 2,
-	TOPBAR_HEIGHT,
-	BOARD_RENDER_LENGTH,
-	BOARD_RENDER_LENGTH,
-}
-
-PANEL_Y :: TOPBAR_HEIGHT
-PANEL_WIDTH :: BOARD_BOUNDS.x - 1
-PANEL_HEIGHT :: BOARD_RENDER_LENGTH
-LEFT_PANEL_BOUNDS :: Rec{
-	0,
-	PANEL_Y,
-	PANEL_WIDTH,
-	PANEL_HEIGHT,
-}
-RIGHT_PANEL_BOUNDS :: Rec{
-	BOARD_BOUNDS.x + BOARD_RENDER_LENGTH + 1,
-	PANEL_Y,
-	PANEL_WIDTH,
-	PANEL_HEIGHT,
-}
-
-TILE_SIZE: f32 = BOARD_RENDER_LENGTH / BOARD_LENGTH
-
 draw :: proc() {
 	begin_letterbox_rendering()
 
 	switch &s in g.scene {
 	case Play_Scene:
-		// Draw board checkered tiles
-		for y in 0..<BOARD_LENGTH {
-			for x in 0..< BOARD_LENGTH {
-				color: rl.Color
-				if ((y*BOARD_LENGTH) + x) % 2 == 0 {
-					color = y % 2 == 1 ? DARK_TILE_COLOR : LIGHT_TILE_COLOR
-				} else {
-					color = y % 2 == 1 ? LIGHT_TILE_COLOR :  DARK_TILE_COLOR
-				}
-				rl.DrawRectangle(i32(math.round(BOARD_BOUNDS.x + f32(x) * TILE_SIZE)),
-								 i32(math.round(BOARD_BOUNDS.y + f32(y) * TILE_SIZE)),
-								 i32(math.round(TILE_SIZE)),
-								 i32(math.round(TILE_SIZE)),
-								 color)
-			}
-		}
-
-		// Draw pieces
-		for row, y in g.board.tiles {
-			for tile, x in row {
-				if piece, is_piece := tile.(Piece); is_piece {
-					// get texture
-					tex := get_texture_by_piece_type(piece.type)
-
-					// get sprite render origin
-					render_pos := board_tile_pos_to_sprite_logical_render_pos(i32(x), i32(y))
-					tile_render_pos_x := i32(math.round(render_pos.x))
-					tile_render_pos_y := i32(math.round(render_pos.y))
-
-					// set src/dst rectangels
-					src_rect := Rec{0,0,f32(tex.width), f32(tex.height)}
-					dst_rect := Rec{f32(tile_render_pos_x), f32(tile_render_pos_y), f32(TILE_SIZE), f32(TILE_SIZE)}
-					tint := piece.color == .White ? WHITE_PIECE_COLOR : BLACK_PIECE_COLOR
-					rl.DrawTexturePro(tex, src_rect, dst_rect, {}, 0, tint)
-
-					// DrawTexturePro
-					// draw_piece_on_board(piece.type, piece.color, {i32(x),i32(y)})
-				}
-			}
-		}
-
+		draw_board_tiles()
+		draw_pieces_from_board(g.board.tiles)
 		if selected_piece, ok := g.selected_piece.?; ok {
-			selected_piece_tile_pos := selected_piece.position
-
-			// Highlight selected piece
-			draw_tile_border(selected_piece_tile_pos, rl.GREEN)
-
-			// Draw possible moves
-			for move_result in sa.slice(&selected_piece.possible_moves) {
-				draw_tile_border(move_result.new_position, rl.PURPLE)
-			}
+			draw_selected_piece_overlay(&selected_piece)
 		}
-
 		if g.board.is_check {
-			// Highlight king in check or checkmate
-			king_pos := get_king_position(g.board.tiles, g.current_player)
-			draw_tile_border(king_pos, rl.RED)
+			draw_check_overlay(g.board.tiles, g.board.current_player)
 		}
-
-		// Debug text
 		if g.debug {
-			// draw tile borders via grid
-			for y in 0..=BOARD_LENGTH {
-				rl.DrawLine(
-					i32(math.floor(BOARD_BOUNDS.x + 0)), 
-					i32(BOARD_BOUNDS.y + f32(y) * TILE_SIZE), 
-					i32(math.floor(BOARD_BOUNDS.x + BOARD_BOUNDS.width)), // for error: cannot be rep w/o truncate/round as type i32
-					i32(BOARD_BOUNDS.y + f32(y) * TILE_SIZE), 
-					rl.BLUE,
-				)
-			}
-			for x in 0..=BOARD_LENGTH {
-				rl.DrawLine(
-					i32(BOARD_BOUNDS.x + f32(x) * TILE_SIZE), 
-					i32(BOARD_BOUNDS.y + 0), 
-					i32(BOARD_BOUNDS.x + f32(x) * TILE_SIZE), 
-					i32(BOARD_BOUNDS.y + BOARD_BOUNDS.height), 
-					rl.BLUE,
-				)
-			}
-
-			for y in 0..=BOARD_LENGTH {
-				for x in 0..=BOARD_LENGTH {
-					render_pos := board_tile_pos_to_sprite_logical_render_pos(i32(x), i32(y))
-					render_pos.x += 2
-					tile_render_pos_x := i32(math.round(render_pos.x))
-					tile_render_pos_y := i32(math.round(render_pos.y))
-					rl.DrawText(fmt.ctprintf("%v,%v", x,y), 
-								tile_render_pos_x,
-								tile_render_pos_y,
-								10,
-								rl.BLUE)
-				}
-			}
-
-			// indicate center of viewport
-			xc :i32= LOGICAL_SCREEN_WIDTH/2
-			yc :i32= LOGICAL_SCREEN_HEIGHT/2
-			rl.DrawLine(xc - 2, yc, xc + 2, yc, rl.ORANGE)
-			rl.DrawLine(xc, yc - 2, xc, yc + 2, rl.ORANGE)
-			rl.DrawRectangleLines(
-				i32((math.round(BOARD_BOUNDS.x-1))),
-				i32(math.round(BOARD_BOUNDS.y-1)),
-				i32(math.round(BOARD_BOUNDS.width+2)),
-				i32(math.round(BOARD_BOUNDS.height+2)),
-				rl.GREEN,
-			)
-
-			// Identify threatened positions
-			for tp in sa.slice(&g.board.threatened_positions) {
-				render_pos := board_tile_pos_to_sprite_logical_render_pos(tp.x, tp.y)
-				render_pos.y += TILE_SIZE * 0.75
-				tile_render_pos_x := i32(math.round(render_pos.x))
-				tile_render_pos_y := i32(math.round(render_pos.y))
-				rl.DrawText("T", tile_render_pos_x, tile_render_pos_y, 10, rl.RED)
-			}
+			draw_debug_board_overlay()
 		}
 	}
 
@@ -1428,17 +1284,7 @@ draw :: proc() {
 		}
 
 		if g.turn_step == .Post_Move {
-			rl.DrawRectangle(i32(g_promotion_piece_data[0].rect.x),i32(g_promotion_piece_data[0].rect.y), i32(TILE_SIZE * 1.1 * len(g_promotion_piece_data)), i32(TILE_SIZE * 1.1), rl.LIGHTGRAY)
-
-			for data, i in g_promotion_piece_data {
-				tex := get_texture_by_piece_type(data.piece_type)
-				x := data.rect.x
-				y := data.rect.y
-				src_rect := Rec{0,0,f32(tex.width), f32(tex.height)}
-				dst_rect := Rec{f32(x), f32(y), f32(data.rect.width), f32(data.rect.height)}
-				tint := g.current_player == .White ? WHITE_PIECE_COLOR : BLACK_PIECE_COLOR
-				rl.DrawTexturePro(tex, src_rect, dst_rect, {}, 0, tint)
-			}
+			draw_promotion_piece_frame()
 		}
 
 		// Draw Checkmate / Gameover state
@@ -1458,97 +1304,10 @@ draw :: proc() {
 
 	end_letterbox_rendering()
 
-	// Debug overlay
-	debug_overlay_text_column :: proc(x,y: ^i32, slice_cstr: []string) {
-		gy: i32 = 20
-		for s in slice_cstr {
-			cstr := strings.clone_to_cstring(s)
-			rl.DrawText(cstr, x^, y^, 20, rl.WHITE)
-			y^ += gy
-		}
-	}
 	if g.debug {
-		{
-			x: i32 = 5
-			y: i32 = 40
-			arr := [?]string{
-				fmt.tprintf("game_duration: %v", 
-							make_duration_display_string(get_game_duration())),
-				fmt.tprintf("turn_duration: %v", 
-							make_duration_display_string(get_turn_duration())),
-				fmt.tprintf("white running: %v", 
-							make_duration_display_string(g.time.players_duration[.White])),
-				fmt.tprintf("black running: %v", 
-							make_duration_display_string(g.time.players_duration[.Black])),
-				fmt.tprintf("game_start_datetime: %v", 
-							make_datetime_display_string(g.time.game_start_datetime)),
-				fmt.tprintf("game_end_datetime: %v", 
-							make_datetime_display_string(g.time.game_end_datetime)),
-			}
-			debug_overlay_text_column(&x, &y, arr[:])
-
-			arr2 := [?]string{
-				fmt.tprintf("mouse_pos: %v", 
-							rl.GetMousePosition()),
-				fmt.tprintf("mouse_tile_pos: %v", 
-							get_tile_position_from_mouse_already_over_board()),
-				fmt.tprintf("check: %v", 
-							g.board.is_check),
-				fmt.tprintf("white_kingside_castle: %v", 
-							g.board.can_kingside_castle[.White]),
-				fmt.tprintf("white_queenside_castle: %v", 
-							g.board.can_queenside_castle[.White]),
-				fmt.tprintf("black_kingside_castle: %v", 
-							g.board.can_kingside_castle[.Black]),
-				fmt.tprintf("black_queenside_castle: %v", 
-							g.board.can_queenside_castle[.Black]),
-			}
-			y += 40
-			debug_overlay_text_column(&x, &y, arr2[:])
-
-			make_string_from_value :: proc(v: any) -> string {
-				return fmt.tprintf("%v", v)
-			}
-
-			selected_piece_type_text: string
-			sp_has_moved: string
-			if selected_piece, selected_piece_ok := g.selected_piece.?; selected_piece_ok {
-				piece, is_piece := get_piece_by_position(g.board.tiles, selected_piece.position)
-				selected_piece_type_text = make_string_from_value(piece.type)
-				sp_has_moved = make_string_from_value(piece.has_moved)
-			} else {
-				selected_piece_type_text = "nil"
-				sp_has_moved = "nil"
-			}
-
-			arr3 := [?]string{
-				fmt.tprintf("n_turns: %v", 
-							g.n_turns),
-				fmt.tprintf("curr_player: %v", 
-							g.current_player),
-				fmt.tprintf("points-white: %v", 
-							g.points[.White]),
-				fmt.tprintf("points-black: %v", 
-							g.points[.Black]),
-				fmt.tprintf("n-captures-white: %v", 
-							sa.len(g.board.captures[.White])),
-				fmt.tprintf("n-captures-black: %v", 
-							sa.len(g.board.captures[.Black])),
-				fmt.tprintf("selected_piece type: %v", 
-							selected_piece_type_text),
-				fmt.tprintf("selected_piece type: %v", 
-							selected_piece_type_text),
-				fmt.tprintf("selected_piece has_moved: %v", 
-							sp_has_moved),
-				fmt.tprintf("draw_offered_white: %v", 
-							g.draw_offered[.White]),
-				fmt.tprintf("draw_offered_black: %v", 
-							g.draw_offered[.Black]),
-			}
-			y += 40
-			debug_overlay_text_column(&x, &y, arr3[:])
-		}
+		draw_debug_overlay()
 	}
+
 	rl.EndDrawing()
 }
 
@@ -1589,6 +1348,7 @@ game_should_run :: proc() -> bool {
 
 @(export)
 game_shutdown :: proc() {
+	free(g.time.local_timezone)
 	free(g)
 }
 
@@ -2790,5 +2550,258 @@ setup_promotion_piece_data :: proc(data: []Promotion_Piece_Data) {
 				height = TILE_SIZE,
 			}
 		}
+	}
+}
+
+TOPBAR_HEIGHT :: 40
+BOARD_RENDER_LENGTH: f32 : f32(LOGICAL_SCREEN_HEIGHT) - f32(TOPBAR_HEIGHT)
+
+BOARD_BOUNDS :: Rec{
+	(LOGICAL_SCREEN_WIDTH - BOARD_RENDER_LENGTH) / 2,
+	TOPBAR_HEIGHT,
+	BOARD_RENDER_LENGTH,
+	BOARD_RENDER_LENGTH,
+}
+
+PANEL_Y :: TOPBAR_HEIGHT
+PANEL_WIDTH :: BOARD_BOUNDS.x - 1
+PANEL_HEIGHT :: BOARD_RENDER_LENGTH
+LEFT_PANEL_BOUNDS :: Rec{
+	0,
+	PANEL_Y,
+	PANEL_WIDTH,
+	PANEL_HEIGHT,
+}
+RIGHT_PANEL_BOUNDS :: Rec{
+	BOARD_BOUNDS.x + BOARD_RENDER_LENGTH + 1,
+	PANEL_Y,
+	PANEL_WIDTH,
+	PANEL_HEIGHT,
+}
+
+TILE_SIZE: f32 = BOARD_RENDER_LENGTH / BOARD_LENGTH
+
+draw_board_tiles :: proc() {
+	for y in 0..<BOARD_LENGTH {
+		for x in 0..< BOARD_LENGTH {
+			color: rl.Color
+			if ((y*BOARD_LENGTH) + x) % 2 == 0 {
+				color = y % 2 == 1 ? DARK_TILE_COLOR : LIGHT_TILE_COLOR
+			} else {
+				color = y % 2 == 1 ? LIGHT_TILE_COLOR :  DARK_TILE_COLOR
+			}
+			rl.DrawRectangle(i32(math.round(BOARD_BOUNDS.x + f32(x) * TILE_SIZE)),
+							 i32(math.round(BOARD_BOUNDS.y + f32(y) * TILE_SIZE)),
+							 i32(math.round(TILE_SIZE)),
+							 i32(math.round(TILE_SIZE)),
+							 color)
+		}
+	}
+}
+
+draw_pieces_from_board :: proc(tiles: Tiles) {
+	for row, y in g.board.tiles {
+		for tile, x in row {
+			if piece, is_piece := tile.(Piece); is_piece {
+				// get texture
+				tex := get_texture_by_piece_type(piece.type)
+
+				// get sprite render origin
+				render_pos := board_tile_pos_to_sprite_logical_render_pos(i32(x), i32(y))
+				tile_render_pos_x := i32(math.round(render_pos.x))
+				tile_render_pos_y := i32(math.round(render_pos.y))
+
+				// set src/dst rectangels
+				src_rect := Rec{0,0,f32(tex.width), f32(tex.height)}
+				dst_rect := Rec{f32(tile_render_pos_x), f32(tile_render_pos_y), f32(TILE_SIZE), f32(TILE_SIZE)}
+				tint := piece.color == .White ? WHITE_PIECE_COLOR : BLACK_PIECE_COLOR
+				rl.DrawTexturePro(tex, src_rect, dst_rect, {}, 0, tint)
+
+				// DrawTexturePro
+				// draw_piece_on_board(piece.type, piece.color, {i32(x),i32(y)})
+			}
+		}
+	}
+}
+
+draw_selected_piece_overlay :: proc(selected_piece: ^Selected_Piece_Data) {
+	selected_piece_tile_pos := selected_piece.position
+
+	// Highlight selected piece
+	draw_tile_border(selected_piece_tile_pos, rl.GREEN)
+
+	// Draw possible moves
+	for move_result in sa.slice(&selected_piece.possible_moves) {
+		draw_tile_border(move_result.new_position, rl.PURPLE)
+	}
+}
+
+draw_check_overlay :: proc(tiles: Tiles, player: Player_Color) {
+	// Highlight king in check or checkmate
+	king_pos := get_king_position(g.board.tiles, g.current_player)
+	draw_tile_border(king_pos, rl.RED)
+}
+
+draw_debug_board_overlay :: proc() {
+	// draw tile borders via grid
+	for y in 0..=BOARD_LENGTH {
+		rl.DrawLine(
+			i32(math.floor(BOARD_BOUNDS.x + 0)), 
+			i32(BOARD_BOUNDS.y + f32(y) * TILE_SIZE), 
+			i32(math.floor(BOARD_BOUNDS.x + BOARD_BOUNDS.width)), // for error: cannot be rep w/o truncate/round as type i32
+			i32(BOARD_BOUNDS.y + f32(y) * TILE_SIZE), 
+			rl.BLUE,
+		)
+	}
+	for x in 0..=BOARD_LENGTH {
+		rl.DrawLine(
+			i32(BOARD_BOUNDS.x + f32(x) * TILE_SIZE), 
+			i32(BOARD_BOUNDS.y + 0), 
+			i32(BOARD_BOUNDS.x + f32(x) * TILE_SIZE), 
+			i32(BOARD_BOUNDS.y + BOARD_BOUNDS.height), 
+			rl.BLUE,
+		)
+	}
+
+	for y in 0..=BOARD_LENGTH {
+		for x in 0..=BOARD_LENGTH {
+			render_pos := board_tile_pos_to_sprite_logical_render_pos(i32(x), i32(y))
+			render_pos.x += 2
+			tile_render_pos_x := i32(math.round(render_pos.x))
+			tile_render_pos_y := i32(math.round(render_pos.y))
+			rl.DrawText(fmt.ctprintf("%v,%v", x,y), 
+						tile_render_pos_x,
+						tile_render_pos_y,
+						10,
+						rl.BLUE)
+		}
+	}
+
+	// indicate center of viewport
+	xc :i32= LOGICAL_SCREEN_WIDTH/2
+	yc :i32= LOGICAL_SCREEN_HEIGHT/2
+	rl.DrawLine(xc - 2, yc, xc + 2, yc, rl.ORANGE)
+	rl.DrawLine(xc, yc - 2, xc, yc + 2, rl.ORANGE)
+	rl.DrawRectangleLines(
+		i32((math.round(BOARD_BOUNDS.x-1))),
+		i32(math.round(BOARD_BOUNDS.y-1)),
+		i32(math.round(BOARD_BOUNDS.width+2)),
+		i32(math.round(BOARD_BOUNDS.height+2)),
+		rl.GREEN,
+	)
+
+	// Identify threatened positions
+	for tp in sa.slice(&g.board.threatened_positions) {
+		render_pos := board_tile_pos_to_sprite_logical_render_pos(tp.x, tp.y)
+		render_pos.y += TILE_SIZE * 0.75
+		tile_render_pos_x := i32(math.round(render_pos.x))
+		tile_render_pos_y := i32(math.round(render_pos.y))
+		rl.DrawText("T", tile_render_pos_x, tile_render_pos_y, 10, rl.RED)
+	}
+}
+
+draw_promotion_piece_frame :: proc() {
+	rl.DrawRectangle(i32(g_promotion_piece_data[0].rect.x),i32(g_promotion_piece_data[0].rect.y), i32(TILE_SIZE * 1.1 * len(g_promotion_piece_data)), i32(TILE_SIZE * 1.1), rl.LIGHTGRAY)
+
+	for data, i in g_promotion_piece_data {
+		tex := get_texture_by_piece_type(data.piece_type)
+		x := data.rect.x
+		y := data.rect.y
+		src_rect := Rec{0,0,f32(tex.width), f32(tex.height)}
+		dst_rect := Rec{f32(x), f32(y), f32(data.rect.width), f32(data.rect.height)}
+		tint := g.current_player == .White ? WHITE_PIECE_COLOR : BLACK_PIECE_COLOR
+		rl.DrawTexturePro(tex, src_rect, dst_rect, {}, 0, tint)
+	}
+}
+
+draw_debug_overlay :: proc() {
+	// Debug overlay
+	debug_overlay_text_column :: proc(x,y: ^i32, slice_cstr: []string) {
+		gy: i32 = 20
+		for s in slice_cstr {
+			cstr := strings.clone_to_cstring(s)
+			rl.DrawText(cstr, x^, y^, 20, rl.WHITE)
+			y^ += gy
+		}
+	}
+	{
+		x: i32 = 5
+		y: i32 = 40
+		arr := [?]string{
+			fmt.tprintf("game_duration: %v", 
+						make_duration_display_string(get_game_duration())),
+			fmt.tprintf("turn_duration: %v", 
+						make_duration_display_string(get_turn_duration())),
+			fmt.tprintf("white running: %v", 
+						make_duration_display_string(g.time.players_duration[.White])),
+			fmt.tprintf("black running: %v", 
+						make_duration_display_string(g.time.players_duration[.Black])),
+			fmt.tprintf("game_start_datetime: %v", 
+						make_datetime_display_string(g.time.game_start_datetime)),
+			fmt.tprintf("game_end_datetime: %v", 
+						make_datetime_display_string(g.time.game_end_datetime)),
+		}
+		debug_overlay_text_column(&x, &y, arr[:])
+
+		arr2 := [?]string{
+			fmt.tprintf("mouse_pos: %v", 
+						rl.GetMousePosition()),
+			fmt.tprintf("mouse_tile_pos: %v", 
+						get_tile_position_from_mouse_already_over_board()),
+			fmt.tprintf("check: %v", 
+						g.board.is_check),
+			fmt.tprintf("white_kingside_castle: %v", 
+						g.board.can_kingside_castle[.White]),
+			fmt.tprintf("white_queenside_castle: %v", 
+						g.board.can_queenside_castle[.White]),
+			fmt.tprintf("black_kingside_castle: %v", 
+						g.board.can_kingside_castle[.Black]),
+			fmt.tprintf("black_queenside_castle: %v", 
+						g.board.can_queenside_castle[.Black]),
+		}
+		y += 40
+		debug_overlay_text_column(&x, &y, arr2[:])
+
+		make_string_from_value :: proc(v: any) -> string {
+			return fmt.tprintf("%v", v)
+		}
+
+		selected_piece_type_text: string
+		sp_has_moved: string
+		if selected_piece, selected_piece_ok := g.selected_piece.?; selected_piece_ok {
+			piece, is_piece := get_piece_by_position(g.board.tiles, selected_piece.position)
+			selected_piece_type_text = make_string_from_value(piece.type)
+			sp_has_moved = make_string_from_value(piece.has_moved)
+		} else {
+			selected_piece_type_text = "nil"
+			sp_has_moved = "nil"
+		}
+
+		arr3 := [?]string{
+			fmt.tprintf("n_turns: %v", 
+						g.n_turns),
+			fmt.tprintf("curr_player: %v", 
+						g.current_player),
+			fmt.tprintf("points-white: %v", 
+						g.points[.White]),
+			fmt.tprintf("points-black: %v", 
+						g.points[.Black]),
+			fmt.tprintf("n-captures-white: %v", 
+						sa.len(g.board.captures[.White])),
+			fmt.tprintf("n-captures-black: %v", 
+						sa.len(g.board.captures[.Black])),
+			fmt.tprintf("selected_piece type: %v", 
+						selected_piece_type_text),
+			fmt.tprintf("selected_piece type: %v", 
+						selected_piece_type_text),
+			fmt.tprintf("selected_piece has_moved: %v", 
+						sp_has_moved),
+			fmt.tprintf("draw_offered_white: %v", 
+						g.draw_offered[.White]),
+			fmt.tprintf("draw_offered_black: %v", 
+						g.draw_offered[.Black]),
+		}
+		y += 40
+		debug_overlay_text_column(&x, &y, arr3[:])
 	}
 }
