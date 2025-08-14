@@ -97,10 +97,12 @@ Board :: struct {
 
 	threatened_positions: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Position),
 	legal_moves: Move_Results,
-	presented_player_moves: Move_Results,
 	gameover: bool,
 
 	tile_pos_to_promote: Maybe(Position),
+
+	show_move_overlay: bool,
+	show_help: bool,
 }
 
 Tiles :: [BOARD_LENGTH][BOARD_LENGTH]Tile
@@ -155,7 +157,7 @@ Player_Color :: Piece_Color
 
 Selected_Piece_Data :: struct {
 	position: Position,
-	possible_moves: Move_Results,
+	legal_moves: Move_Results,
 }
 
 PIECE_POINTS := [Piece_Type]i32{
@@ -171,7 +173,7 @@ PIECE_POINTS := [Piece_Type]i32{
 Turn_Step :: enum {
 	Eval, // start here
 	Try_Move, // loop until legal move
-	Post_Move, // select promotion piece
+	Choose_Promotion_Piece, // select promotion piece
 	End, // ends here
 }
 
@@ -236,7 +238,7 @@ init :: proc() {
 	// g.board = test_init_board_king_v_king_knight()
 	// g.board = test_init_board_king_bishop_v_king_bishop_same_color_bishop_black()
 	// g.board = test_init_board_king_bishop_v_king_bishop_same_color_bishop_white()
-	g.board = test_init_board_promotion_white()
+	// g.board = test_init_board_promotion_white()
 	// g.board = test_init_board_promotion_black()
 
 	// TEST CAPTURES
@@ -305,29 +307,101 @@ update :: proc() {
 			eval_board(&g.board)
 			g.board.turn_step = .Try_Move
 
+		// aka read and evaluate player input. aka Player_Action
+			// TODO: CSDR Turn_Step Read_And_Respond_Player_Input aka Player_Action
+			// read input, do something on input. Conditionally goto Make_Move turnstep
+			// TODO: CSDR Turn_Step Make_Move
 		case .Try_Move:
 			action := process_play_input(&s)
 
-			// TODO: rename this, it is not proposing a move. There needs to be a better name or a different function because currently it handles piece select/deselect. Need separation of concern here, especially for clarity of user action and colocating playing sounds
-			proposed_move_result, is_move_proposed := propose_move(g.board, action)
-			if is_move_proposed {
-				move_result, is_legal, message := eval_move(g.board, proposed_move_result)
-				if is_legal {
-					make_move(&g.board, move_result)
-					play_sfx(.Drop)
+			switch action {
 
-					if promotion_available := eval_promotion(&g.board); promotion_available {
-							g.board.turn_step = .Post_Move
+			case .Toggle_Move_Overlay:
+				toggle_move_overlay()
+				return
+
+			case .Toggle_Help:
+				toggle_help()
+				return
+
+			case .Left_Click_Board:
+
+				// Selected Piece Logic
+				clicked_tile_pos := get_tile_position_from_mouse_already_over_board()
+				selected_piece, is_piece_selected := g.selected_piece.?
+				clicked_piece, ok_clicked_piece := get_piece_by_position(g.board.tiles, clicked_tile_pos)
+
+				// Click on a friendly piece to run selection logic, no move possible from this action
+				if ok_clicked_piece && clicked_piece.color == g.board.current_player {
+					pr("in friendly piece logic")
+					if is_piece_selected {
+						if selected_piece.position != clicked_tile_pos {
+							legal_moves := g.board.legal_moves
+							selected_legal_moves := get_legal_moves_for_position(sa.slice(&legal_moves), clicked_tile_pos)
+							new_selected_piece := Selected_Piece_Data{
+								position = clicked_tile_pos,
+								legal_moves = selected_legal_moves,
+							}
+							g.selected_piece = new_selected_piece
+							play_sfx(.Pickup)
+							pr("Action: Select_Another_Piece")
+						} else {
+							g.selected_piece = nil
+							play_sfx(.Drop)
+							pr("Action: DeSelect_Piece")
+						}
 					} else {
-						g.board.turn_step = .End
+							legal_moves := g.board.legal_moves
+							selected_legal_moves := get_legal_moves_for_position(sa.slice(&legal_moves), clicked_tile_pos)
+							new_selected_piece := Selected_Piece_Data{
+								position = clicked_tile_pos,
+								legal_moves = selected_legal_moves,
+							}
+							g.selected_piece = new_selected_piece
+							play_sfx(.Pickup)
+							pr("Action: Select_Piece")
 					}
 
-				} else {
-					g.message = message
+				// No piece selected and click on empty position or enemy piece, no move possible from this action
+				} else if !is_piece_selected && (!ok_clicked_piece || clicked_piece.color != g.board.current_player) {
+					// TODO: empty / null action sound. Like hearthstone sound of clicking on non-actionable area aka empty part of play area
+					pr("Action: None")
+
+				// Try move with selected piece
+				} else if is_piece_selected {
+
+					proposed_move := Move_Result{
+						old_position = selected_piece.position,
+						new_position = clicked_tile_pos,
+						piece_action = .None,
+					}
+
+					// if it's within current legal moves, JUST GO!
+					for legal_move in sa.slice(&g.board.legal_moves) {
+						if legal_move.old_position == selected_piece.position && legal_move.new_position == clicked_tile_pos {
+							proposed_move.piece_action = legal_move.piece_action
+						}
+					}
+
+					// legality via piece_action
+					if proposed_move.piece_action != .None {
+						make_move(&g.board, proposed_move)
+						play_sfx(.Drop)
+
+						if promotion_available := eval_promotion(&g.board); promotion_available {
+								g.board.turn_step = .Choose_Promotion_Piece
+						} else {
+							g.board.turn_step = .End
+						}
+
+					} else {
+						g.message = get_message_for_illegal_move(g.board, proposed_move)
+					}
 				}
+			case .None:
 			}
 
-		case .Post_Move:
+		case .Choose_Promotion_Piece:
 			if pos_to_promote, ok_pos := g.board.tile_pos_to_promote.(Position); ok_pos {
 				for data, i in g_promotion_piece_data {
 					// TODO: integrate this with existing process_play_input?
@@ -358,116 +432,499 @@ update :: proc() {
 	}
 }
 
+draw :: proc() {
+	begin_letterbox_rendering()
+
+	switch &s in g.scene {
+	case Play_Scene:
+		draw_board_tiles()
+		draw_pieces_from_board(g.board.tiles)
+		if selected_piece, ok := g.selected_piece.?; ok {
+
+			selected_piece_tile_pos := selected_piece.position
+			// Highlight selected piece
+			draw_tile_border(selected_piece_tile_pos, rl.GREEN)
+
+			if g.board.show_move_overlay {
+				draw_selected_piece_move_overlay(&selected_piece)
+			}
+		}
+		if g.board.is_check {
+			draw_check_overlay(g.board.tiles, g.board.current_player)
+		}
+		if g.debug {
+			draw_debug_board_overlay()
+		}
+	}
+
+	rl.BeginMode2D(ui_camera())
+		// Top Status Bar
+		{
+			rl.GuiStatusBar({0,0,LOGICAL_SCREEN_WIDTH, TOPBAR_HEIGHT}, "")
+			y :f32= 4
+			x: f32 = 5
+			if rl.GuiButton({x,y,70,15}, "New Game") do pr("Click New Game")
+			x += 75
+			if rl.GuiButton({x,y,70,15}, "Draw") {
+				pr("Click Draw")
+				g.draw_offered[g.current_player] = g.n_turns
+				g.turn_step = .End
+			}
+			x += 75
+			if rl.GuiButton({x,y,15,15}, "#193#") {
+				pr("Click Help")
+			}
+			x += 70
+			rl.DrawText(make_duration_display_string(get_game_duration()), i32(x), 7, 8, rl.WHITE)
+			x += 80
+			rl.DrawText(fmt.ctprintf("Turn: %v", g.board.n_turns), i32(x), 7, 8, rl.WHITE)
+
+			if rl.GuiButton({465,y,70,15}, "Exit") {
+				 pr("Click Exit")
+				 g.app_state = .Exit
+			}
+
+			top_bar_message := fmt.ctprintf("%v %v", g.message, g.dead_position_message)
+			rl.DrawText(top_bar_message, 180, 27, 8, rl.RED)
+		}
+
+		// White Panel (Left)
+		{
+			white_panel_bounds := LEFT_PANEL_BOUNDS
+			rl.GuiPanel(white_panel_bounds, nil)
+			x0 := white_panel_bounds.x
+			y0 := white_panel_bounds.y
+
+			x := x0 + 3
+			y := y0 + 3
+			rl.GuiLabel({x, y, white_panel_bounds.width, 10}, "White")
+
+			y += 15
+			cstr_player_duration := make_duration_display_string(get_player_duration(.White))
+			rl.GuiLabel({x, y, 100, 10}, cstr_player_duration)
+
+			if g.current_player == .White {
+				y += 15
+				cstr_turn_duration := make_duration_display_string(get_turn_duration())
+				cstr_player_turn_duration_text := fmt.ctprintf("+%v", cstr_turn_duration)
+				rl.GuiLabel({x, y, 100, 10}, cstr_player_turn_duration_text)
+			}
+
+			// Show cap pieces from bottom up
+			xcap :i32= i32(x0 + 10)
+			ycap :i32= i32(white_panel_bounds.y + white_panel_bounds.height) - 30 * 9
+			for piece_type,i in sa.slice(&g.board.captures[.White]) {
+				if i % 8 == 0 && i > 0 {
+					 xcap += 40
+					 ycap -= 240
+				}
+				ycap += 30
+				draw_piece(piece_type, .Black, xcap,ycap)
+			}
+		}
+		
+		// Black Panel (Right)
+		{
+			black_panel_bounds := RIGHT_PANEL_BOUNDS
+			rl.GuiPanel(black_panel_bounds, nil)
+			x0 := black_panel_bounds.x
+			y0 := black_panel_bounds.y
+
+			x := x0 + 3
+			y := y0 + 3
+			rl.GuiLabel({x, y, black_panel_bounds.width, 10}, "black")
+
+			y += 15
+			cstr_player_duration_text := make_duration_display_string(get_player_duration(.Black))
+			rl.GuiLabel({x, y, 100, 10}, cstr_player_duration_text)
+
+			if g.current_player == .Black {
+				y += 15
+				cstr_turn_duration := make_duration_display_string(get_turn_duration())
+				cstr_player_turn_duration_text := fmt.ctprintf("+%v", cstr_turn_duration)
+				rl.GuiLabel({x, y, 100, 10}, cstr_player_turn_duration_text)
+			}
+
+			// Show cap pieces from bottom up
+			xcap :i32= i32(x0 + 10)
+			ycap :i32= i32(black_panel_bounds.y + black_panel_bounds.height) - 30 * 9
+			for piece_type,i in sa.slice(&g.board.captures[.Black]) {
+				if i % 8 == 0 && i > 0 {
+					 xcap += 40
+					 ycap -= 240
+				}
+				ycap += 30
+				draw_piece(piece_type, .White, xcap,ycap)
+			}
+		}
+
+		if g.turn_step == .Choose_Promotion_Piece {
+			draw_promotion_piece_frame()
+		}
+
+		// Draw Checkmate / Gameover state
+		if g.gameover {
+			if g.is_checkmate {
+				winner := get_other_player_color(g.current_player)
+				t := fmt.ctprintf("Checkmate! %v wins!", winner)
+				rl.DrawText(t,140,180, 24, rl.RED)
+			} else if g.is_draw {
+				t := fmt.ctprintf("- Draw -")
+				rl.DrawText(t, 250,180, 24, rl.RED)
+
+			}
+
+		}
+	rl.EndMode2D()
+
+	end_letterbox_rendering()
+
+	if g.debug {
+		draw_debug_overlay()
+	}
+
+	rl.EndDrawing()
+}
+
+@(export)
+game_update :: proc() {
+	update()
+	draw()
+	free_all(context.temp_allocator)
+}
+
+@(export)
+game_init_window :: proc() {
+	rl.SetConfigFlags({.WINDOW_RESIZABLE, .VSYNC_HINT})
+	rl.InitWindow(WINDOW_W, WINDOW_H, WINDOW_TITLE)
+	rl.SetWindowPosition(10, 125)
+	rl.SetTargetFPS(TICK_RATE )
+	rl.SetExitKey(nil)
+}
+
+@(export)
+game_init :: proc() {
+	log.info("Initializing game...")
+	setup() // run once
+	init() // run after setup, then on game reset
+	game_hot_reloaded(g)
+}
+
+@(export)
+game_should_run :: proc() -> bool {
+	when ODIN_OS != .JS {
+		// Never run this proc in browser. It contains a 16 ms sleep on web!
+		if rl.WindowShouldClose() {
+			return false
+		}
+	}
+	return g.app_state != .Exit
+}
+
+@(export)
+game_shutdown :: proc() {
+	free(g.time.local_timezone)
+	free(g)
+}
+
+@(export)
+game_shutdown_window :: proc() {
+	rl.CloseWindow()
+}
+
+@(export)
+game_memory :: proc() -> rawptr {
+	return g
+}
+
+@(export)
+game_memory_size :: proc() -> int {
+	return size_of(Game_Memory)
+}
+
+@(export)
+game_hot_reloaded :: proc(mem: rawptr) {
+	g = (^Game_Memory)(mem)
+
+	// Here you can also set your own global variables. A good idea is to make
+	// your global variables into pointers that point to something inside `g`.
+}
+
+@(export)
+game_force_reload :: proc() -> bool {
+	return rl.IsKeyPressed(.F5)
+}
+
+@(export)
+game_force_restart :: proc() -> bool {
+	return rl.IsKeyPressed(.R)
+}
+
+// In a web build, this is called when browser changes size. Remove the
+// `rl.SetWindowSize` call if you don't want a resizable game.
+game_parent_window_size_changed :: proc(w, h: int) {
+	rl.SetWindowSize(i32(w), i32(h))
+}
+
+game_reset :: proc() {
+	init()
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Global Input
+///////////////////////////////////////////////////////////////////////////////
+
+Global_Input :: enum {
+	Toggle_Debug,
+	Exit,
+	Exit2,
+	Reset,
+	Toggle_Music,
+}
+
+GLOBAL_INPUT_LOOKUP := [Global_Input]rl.KeyboardKey{
+	.Toggle_Debug = .GRAVE,
+	.Exit = .ESCAPE,
+	.Exit2 = .Q,
+	.Reset = .R,
+	.Toggle_Music = .M,
+}
+
+process_global_input :: proc() {
+	input: bit_set[Global_Input]
+	for key, input_ in GLOBAL_INPUT_LOOKUP {
+		switch input_ {
+		case .Toggle_Debug, .Exit, .Exit2, .Toggle_Music, .Reset:
+			if rl.IsKeyPressed(key) {
+				input += {input_}
+			}
+		}
+	}
+    if .Toggle_Debug in input {
+        g.debug = !g.debug
+    } else if .Exit in input || .Exit2 in input {
+		g.app_state = .Exit
+    } else if .Reset in input {
+		game_reset()
+    } else if .Toggle_Music in input {
+		toggle_music()
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Play Scene
+///////////////////////////////////////////////////////////////////////////////
+
+// TODO: mouse play input, see randy and simpler approaches
+// TODO: keyboard inputs: "?" for help modal, h toggle possible moves
+
+Play_Action :: enum {
+	None,
+	Left_Click_Board,
+	Toggle_Move_Overlay,
+	Toggle_Help,
+}
+
+is_mouse_over_board :: proc() -> bool {
+	return is_mouse_over_rect(BOARD_BOUNDS.x, 
+							  BOARD_BOUNDS.y, 
+							  BOARD_BOUNDS.width, 
+							  BOARD_BOUNDS.height)
+}
+
+process_play_input :: proc(s: ^Play_Scene) -> Play_Action {
+	if is_mouse_over_board() && rl.IsMouseButtonPressed(.LEFT) {
+		return .Left_Click_Board
+	}
+	if rl.IsKeyPressed(.M) {
+		return .Toggle_Move_Overlay
+	}
+	if (rl.IsKeyDown(.LEFT_SHIFT) || rl.IsKeyDown(.LEFT_SHIFT)) && rl.IsKeyPressed(.SLASH) {
+		return .Toggle_Help
+	}
+	return .None
+}
+
+toggle_help :: proc() {
+	g.board.show_help = !g.board.show_help
+}
+
+toggle_move_overlay :: proc() {
+	g.board.show_move_overlay = !g.board.show_move_overlay
+}
+
+draw_sprite :: proc(
+	texture_id: Texture_ID, 
+	pos: Vec2, 
+	size: Vec2, 
+	rotation: f32 = 0, 
+	scale: f32 = 1, 
+	tint: rl.Color = rl.WHITE
+) {
+	tex := get_texture(texture_id)
+	src_rect := Rec {
+		0, 0, f32(tex.width), f32(tex.height),
+	}
+	dst_rect := Rec {
+		pos.x, pos.y, size.x, size.y,
+	}
+	rl.DrawTexturePro(tex, src_rect, dst_rect, {}, rotation, tint)
+}
+
+make_duration_display_string :: proc(d: time.Duration) -> cstring {
+	h,m,s := time.clock_from_duration(d)
+	cstr := fmt.ctprintf("%dh %dm %ds", h,m,s)
+	return cstr
+}
+
+make_datetime_display_string :: proc(dt: datetime.DateTime) -> cstring {
+	if e := datetime.validate(dt); e != .None {
+		// log.error("Failed datetime validation:", e)
+		return fmt.ctprint("Invalid date")
+	}
+	return fmt.ctprintf("%v %v, %v %v:%v:%v", 
+						get_month_by_seq(dt.month), 
+						dt.day,
+						dt.year,
+						dt.hour,
+						dt.minute,
+						dt.second)
+}
+
+// get position of top left corner of tile in render (render logical) coords from game logical coords board tile pos
+board_tile_pos_to_sprite_logical_render_pos :: proc(x, y: i32) -> Vec2 {
+	// origin is bottom left of board
+	pos := Vec2{BOARD_BOUNDS.x + f32(x) * TILE_SIZE, 
+				BOARD_BOUNDS.y + BOARD_BOUNDS.height - f32(y+1) * TILE_SIZE}
+	return pos
+}
+
+aabb_intersects :: proc(a_x, a_y, a_w, a_h: f32, b_x, b_y, b_w, b_h: f32) -> bool {
+    return !(a_x + a_w < b_x ||
+           b_x + b_w < a_x ||
+           a_y + a_h < b_y ||
+           b_y + b_h < a_y)
+}
+
+toggle_music :: proc() {
+	g.is_music_enabled = !g.is_music_enabled
+}
+
+begin_letterbox_rendering :: proc() {
+	rl.BeginTextureMode(g.render_texture)
+	rl.ClearBackground(BACKGROUND_COLOR)
+	
+	// Scale all drawing by RENDER_TEXTURE_SCALE for higher resolution
+	camera := rl.Camera2D{
+		zoom = RENDER_TEXTURE_SCALE,
+		// no offset for chess
+		// offset = { 
+		// 	LOGICAL_SCREEN_WIDTH * RENDER_TEXTURE_SCALE / 2,
+		// 	LOGICAL_SCREEN_HEIGHT * RENDER_TEXTURE_SCALE / 2
+		// },
+	}
+	rl.BeginMode2D(camera)
+}
+
+end_letterbox_rendering :: proc() {
+	rl.EndMode2D()  // End the scale transform
+	rl.EndTextureMode()
+	
+	rl.BeginDrawing()
+	rl.ClearBackground(rl.BLACK)
+	
+	// Calculate letterbox dimensions
+	viewport_width, viewport_height := get_viewport_size()
+	offset_x, offset_y := get_viewport_offset()
+	
+	// Draw the render texture with letterboxing
+	render_texture_width: f32 = LOGICAL_SCREEN_WIDTH * RENDER_TEXTURE_SCALE
+	render_texture_height: f32 = LOGICAL_SCREEN_HEIGHT * RENDER_TEXTURE_SCALE
+	src := Rec{0, 0, render_texture_width, -render_texture_height} // negative height flips texture
+	dst := Rec{-offset_x, -offset_y, viewport_width, viewport_height}
+	rl.DrawTexturePro(g.render_texture.texture, src, dst, {}, 0, rl.WHITE)
+	// rl.EndDrawing() // moved outside for debug overlay
+}
+
+get_viewport_scale :: proc() -> f32 {
+	window_w := f32(rl.GetScreenWidth())
+	window_h := f32(rl.GetScreenHeight())
+	scale := min(window_w / LOGICAL_SCREEN_WIDTH, window_h / LOGICAL_SCREEN_HEIGHT)
+	return scale
+}
+
+get_viewport_size :: proc() -> (width, height: f32) {
+	scale := get_viewport_scale()
+	width = LOGICAL_SCREEN_WIDTH * scale
+	height = LOGICAL_SCREEN_HEIGHT * scale
+	return width, height
+}
+
+get_viewport_offset :: proc() -> (f32,f32) {
+	window_w := f32(rl.GetScreenWidth())
+	window_h := f32(rl.GetScreenHeight())
+	viewport_width, viewport_height := get_viewport_size()
+	off_x := -(window_w - viewport_width) / 2
+	off_y := -(window_h - viewport_height) / 2
+	return off_x, off_y
+}
+
+is_in_bounds :: proc(x,y: i32) -> bool {
+	return !(x < 0 || x > 7 || y < 0 || y > 7)
+}
+
+// Also tests for board boundary
+get_tile_by_position :: proc(tiles: Tiles, pos: Position) -> (tile: Tile, in_bounds: bool) {
+	if !is_in_bounds(pos.x, pos.y){
+		return {}, false
+	}
+	return tiles[pos.y][pos.x], true
+}
+
+get_piece_by_position :: proc(tiles: Tiles, pos: Position) -> (piece: Piece, is_piece: bool) {
+	tile, in_bounds := get_tile_by_position(tiles, pos)
+	if !in_bounds {
+		return {}, false
+	}
+	if tile_piece, piece_ok := tile.(Piece); piece_ok {
+		return tile_piece, true
+	}
+	return {}, false
+
+}
+
+get_message_for_illegal_move :: proc(board: Board, proposed_move: Move_Result) -> string {
+	// CSDR: improve this function to contain a suite of helpful messages
+	// for now just use eval_move
+	_, message := eval_move(board, proposed_move)
+	return message
+}
+
+
 // test for legality, if illegal emit message, else approve move
-eval_move :: proc(original_board: Board, proposed_move_result: Move_Result) -> (
-	move_result: Move_Result, is_legal: bool, message: string
+eval_move :: proc(original_board: Board, proposed_move: Move_Result) -> (
+	is_legal: bool, message: string
 ) {
 	proposed_board := original_board
-	make_move(&proposed_board, proposed_move_result)
+	make_move(&proposed_board, proposed_move)
 
 	threatened_positions := get_threatened_all_positions_for_player(proposed_board,
 																    proposed_board.current_player)
 	is_king_threatened := is_position_threatened(sa.slice(&threatened_positions),
 												 get_king_position(proposed_board.tiles, 
 												 proposed_board.current_player))
-	// is_check, illegal move
 	if is_king_threatened {
-		return {}, false, "Illegal move: cannot move into a check position"
+		return false, "Illegal move: cannot move into a check position"
 	}
+	// TODO: consider giving a reason. Layout illegal move specific conditions here and emit appropriate message, aka:
+	// puts king in check ? => Cannot make a move that puts king into check
+	// keeps king in check ? => Must make a move to get king out of check
+	// cannot castle => a. king moved, b. rook moved, c. blocked, d. threatened
+	// TODO: emit a move_result without an action... new struct?
 
-	return proposed_move_result, true, ""
+	return true, ""
 }
 
-propose_move :: proc(board: Board, action: Play_Action) -> (
-	move_result: Move_Result,
-	is_move_proposed: bool
-) {
-	// First, position and existence changes are made: move, capture, special move initiation
-	// Second, "Subsequent state resolution": promotion, followup submoves (castling), check, 
-	action_switch: switch action {
-	case .Left_Click_Board:
-		mouse_tile_pos := get_tile_position_from_mouse_already_over_board()
-		
-		selected_piece, is_piece_selected := g.selected_piece.?
-		clicked_tile, _ := get_tile_by_position(board.tiles, mouse_tile_pos)
-		clicked_piece, is_piece := clicked_tile.(Piece)
-		if !is_piece_selected {
-			// Select a friendly piece
-			if is_piece && clicked_piece.color == board.current_player {
-				new_selected_piece := Selected_Piece_Data{
-					position = mouse_tile_pos,
-					possible_moves = get_blind_moves(board, 
-													 mouse_tile_pos, 
-													 board.current_player),
-				}
-				g.selected_piece = new_selected_piece
-				play_sfx(.Pickup)
-				pr("Action: Select_Piece")
-			} else {
-				pr("Action: None")
-			}
-			move_result = {}
-			is_move_proposed = false
-			return
-
-		} else {
-			// Since a piece already selected: deselect if clicked selected piece else select new piece
-			// aka toggle selection friendly piece
-			if is_piece && clicked_piece.color == board.current_player {
-				if selected_piece.position == mouse_tile_pos {
-					g.selected_piece = nil
-					play_sfx(.Drop)
-					pr("Action: DeSelect_Piece")
-				} else {
-					new_selected_piece := Selected_Piece_Data{
-						position = mouse_tile_pos,
-						possible_moves = get_blind_moves(board, 
-														 mouse_tile_pos, 
-														 board.current_player),
-					}
-					g.selected_piece = new_selected_piece
-					play_sfx(.Pickup)
-					pr("Action: Select_Piece")
-				}
-				move_result = {}
-				is_move_proposed = false
-				return
-			}
-
-			// Either clicked on: 
-			// - tile that's not movable to
-			// - tile that's movable to (possible move)
-			// This results in any:
-			// - basic move aka travel
-			// - capture
-			// - special move
-
-			// A. If it is a possible move, do it
-			for possible_move in sa.slice(&selected_piece.possible_moves) {
-				if mouse_tile_pos == possible_move.new_position {
-					move_result = possible_move
-					is_move_proposed = true
-					return
-				}
-			}
-
-			// B. If clicked tile not a possible move
-			g.selected_piece = nil
-			pr("Action: Deselect_Piece")
-			play_sfx(.Drop)
-			is_move_proposed = false
-			return
-		}
-
-		is_move_proposed = false
-		return
-	case .None:
-		is_move_proposed = false
-		return
-	}
-	unreachable()
-
-}
 
 make_move :: proc(board: ^Board, move_result: Move_Result) {
 	if move_result.piece_action == .None {
@@ -596,6 +1053,14 @@ BLACK_KING_POSITION :: Position{4,BOARD_LENGTH-1}
 BLACK_QUEENSIDE_ROOK_POSITION :: Position{0,BOARD_LENGTH-1}
 BLACK_KINGSIDE_ROOK_POSITION :: Position{BOARD_LENGTH-1,BOARD_LENGTH-1}
 
+get_legal_moves_for_position :: proc(legal_moves: []Move_Result, position: Position) -> (selected_move_results: Move_Results) {
+	for m in legal_moves {
+		if m.old_position == position {
+			sa.append(&selected_move_results, m)
+		}
+	}
+	return selected_move_results
+}
 // All this does is flag check or checkmate
 // This is called at start of next player's turn (right afte end_turn but before next frame)
 eval_board :: proc(board: ^Board) {
@@ -603,14 +1068,13 @@ eval_board :: proc(board: ^Board) {
 
 	// Cache state ///////////////////////////////////////////////////////////////////////
 	// this is for moves to present to player, including illegal moves
-	board.presented_player_moves = get_moves_to_present_to_player(board^,
-																  board.current_player)
 	board.threatened_positions = get_threatened_all_positions_for_player(board^,
 																		 board.current_player)
+	player_moves := get_moves_for_player(board^, board.current_player)
 	board.legal_moves = get_legal_moves(g.board,
 										board.current_player, 
 										sa.slice(&board.threatened_positions),
-										sa.slice(&board.presented_player_moves))
+										sa.slice(&player_moves))
 	/////////////////////////////////////////////////////////////////////////////////////
 
 	// Check and Checkmate
@@ -985,17 +1449,17 @@ is_castle_available :: proc(
 	return true
 }
 
-get_moves_to_present_to_player :: proc(
+get_moves_for_player :: proc(
 	board: Board, 
 	player_color: Player_Color
 ) -> (
-	presented_moves: Move_Results
+	player_moves: Move_Results
 ) {
 	piece_positions := get_piece_positions_by_player(board.tiles, player_color)
 	for piece_position in sa.slice(&piece_positions) {
-		possible_moves := get_blind_moves(board, piece_position, player_color)
-		for move in sa.slice(&possible_moves) {
-			sa.push(&presented_moves, move)
+		moves := get_moves_for_position(board, piece_position, player_color)
+		for move in sa.slice(&moves) {
+			sa.push(&player_moves, move)
 		}
 	}
 	return
@@ -1005,14 +1469,14 @@ get_legal_moves :: proc(
 	original_board: Board,
 	player_color: Player_Color, 
 	threatened_positions: []Position, 
-	presented_player_moves: []Move_Result
+	player_moves: []Move_Result
 ) -> (
 	legal_moves: Move_Results
 ) {
-	outer_loop: for presented_move_result in presented_player_moves {
-		move_result, is_move_legal, message := eval_move(original_board, presented_move_result)
+	outer_loop: for move in player_moves {
+		is_move_legal, message := eval_move(original_board, move)
 		if is_move_legal  {
-			sa.push(&legal_moves, presented_move_result)
+			sa.push(&legal_moves, move)
 		}
 	}
 	return legal_moves
@@ -1024,9 +1488,9 @@ get_king_legal_moves :: proc(
 ) -> (
 	legal_moves: Move_Results
 ) {
-	blind_moves := get_blind_moves(board, 
-								   get_king_position(board.tiles, player_color), 
-								   player_color)
+	blind_moves := get_moves_for_position(board, 
+							 get_king_position(board.tiles, player_color), 
+							 player_color)
 	threatened_positions := board.threatened_positions
 	for blind_move in sa.slice(&blind_moves) {
 		for p in sa.slice(&threatened_positions) {
@@ -1040,7 +1504,7 @@ get_king_legal_moves :: proc(
 }
 
 can_king_move :: proc(board: Board, player_color: Player_Color) -> bool {
-	blind_moves := get_blind_moves(board, 
+	blind_moves := get_moves_for_position(board, 
 								   get_king_position(board.tiles, player_color), 
 								   player_color)
 	threatened_positions := board.threatened_positions
@@ -1173,435 +1637,6 @@ get_threatened_all_positions_for_player :: proc(
 	return threatened_positions
 }
 
-draw :: proc() {
-	begin_letterbox_rendering()
-
-	switch &s in g.scene {
-	case Play_Scene:
-		draw_board_tiles()
-		draw_pieces_from_board(g.board.tiles)
-		if selected_piece, ok := g.selected_piece.?; ok {
-			draw_selected_piece_overlay(&selected_piece)
-		}
-		if g.board.is_check {
-			draw_check_overlay(g.board.tiles, g.board.current_player)
-		}
-		if g.debug {
-			draw_debug_board_overlay()
-		}
-	}
-
-	rl.BeginMode2D(ui_camera())
-		// Top Status Bar
-		{
-			rl.GuiStatusBar({0,0,LOGICAL_SCREEN_WIDTH, TOPBAR_HEIGHT}, "")
-			y :f32= 4
-			if rl.GuiButton({5,y,70,15}, "New Game") do pr("Click New Game")
-			if rl.GuiButton({100,y,70,15}, "Draw") {
-				pr("Click Draw")
-				g.draw_offered[g.current_player] = g.n_turns
-				g.turn_step = .End
-			}
-			rl.DrawText(make_duration_display_string(get_game_duration()), 220, 7, 8, rl.WHITE)
-			rl.DrawText(fmt.ctprintf("Turn: %v", g.board.n_turns), 300, 7, 8, rl.WHITE)
-			if rl.GuiButton({450,y,70,15}, "Exit") {
-				 pr("Click Exit")
-				 g.app_state = .Exit
-			}
-
-			top_bar_message := fmt.ctprintf("%v %v", g.message, g.dead_position_message)
-			rl.DrawText(top_bar_message, 180, 27, 8, rl.RED)
-		}
-
-		// White Panel (Left)
-		{
-			white_panel_bounds := LEFT_PANEL_BOUNDS
-			rl.GuiPanel(white_panel_bounds, nil)
-			x0 := white_panel_bounds.x
-			y0 := white_panel_bounds.y
-
-			x := x0 + 3
-			y := y0 + 3
-			rl.GuiLabel({x, y, white_panel_bounds.width, 10}, "White")
-
-			y += 15
-			cstr_player_duration := make_duration_display_string(get_player_duration(.White))
-			rl.GuiLabel({x, y, 100, 10}, cstr_player_duration)
-
-			if g.current_player == .White {
-				y += 15
-				cstr_turn_duration := make_duration_display_string(get_turn_duration())
-				cstr_player_turn_duration_text := fmt.ctprintf("+%v", cstr_turn_duration)
-				rl.GuiLabel({x, y, 100, 10}, cstr_player_turn_duration_text)
-			}
-
-			// Show cap pieces from bottom up
-			xcap :i32= i32(x0 + 10)
-			ycap :i32= i32(white_panel_bounds.y + white_panel_bounds.height) - 30 * 9
-			for piece_type,i in sa.slice(&g.board.captures[.White]) {
-				if i % 8 == 0 && i > 0 {
-					 xcap += 40
-					 ycap -= 240
-				}
-				ycap += 30
-				draw_piece(piece_type, .Black, xcap,ycap)
-			}
-		}
-		
-		// Black Panel (Right)
-		{
-			black_panel_bounds := RIGHT_PANEL_BOUNDS
-			rl.GuiPanel(black_panel_bounds, nil)
-			x0 := black_panel_bounds.x
-			y0 := black_panel_bounds.y
-
-			x := x0 + 3
-			y := y0 + 3
-			rl.GuiLabel({x, y, black_panel_bounds.width, 10}, "black")
-
-			y += 15
-			cstr_player_duration_text := make_duration_display_string(get_player_duration(.Black))
-			rl.GuiLabel({x, y, 100, 10}, cstr_player_duration_text)
-
-			if g.current_player == .Black {
-				y += 15
-				cstr_turn_duration := make_duration_display_string(get_turn_duration())
-				cstr_player_turn_duration_text := fmt.ctprintf("+%v", cstr_turn_duration)
-				rl.GuiLabel({x, y, 100, 10}, cstr_player_turn_duration_text)
-			}
-
-			// Show cap pieces from bottom up
-			xcap :i32= i32(x0 + 10)
-			ycap :i32= i32(black_panel_bounds.y + black_panel_bounds.height) - 30 * 9
-			for piece_type,i in sa.slice(&g.board.captures[.Black]) {
-				if i % 8 == 0 && i > 0 {
-					 xcap += 40
-					 ycap -= 240
-				}
-				ycap += 30
-				draw_piece(piece_type, .White, xcap,ycap)
-			}
-		}
-
-		if g.turn_step == .Post_Move {
-			draw_promotion_piece_frame()
-		}
-
-		// Draw Checkmate / Gameover state
-		if g.gameover {
-			if g.is_checkmate {
-				winner := get_other_player_color(g.current_player)
-				t := fmt.ctprintf("Checkmate! %v wins!", winner)
-				rl.DrawText(t,140,180, 24, rl.RED)
-			} else if g.is_draw {
-				t := fmt.ctprintf("- Draw -")
-				rl.DrawText(t, 250,180, 24, rl.RED)
-
-			}
-
-		}
-	rl.EndMode2D()
-
-	end_letterbox_rendering()
-
-	if g.debug {
-		draw_debug_overlay()
-	}
-
-	rl.EndDrawing()
-}
-
-@(export)
-game_update :: proc() {
-	update()
-	draw()
-	free_all(context.temp_allocator)
-}
-
-@(export)
-game_init_window :: proc() {
-	rl.SetConfigFlags({.WINDOW_RESIZABLE, .VSYNC_HINT})
-	rl.InitWindow(WINDOW_W, WINDOW_H, WINDOW_TITLE)
-	rl.SetWindowPosition(10, 125)
-	rl.SetTargetFPS(TICK_RATE )
-	rl.SetExitKey(nil)
-}
-
-@(export)
-game_init :: proc() {
-	log.info("Initializing game...")
-	setup() // run once
-	init() // run after setup, then on game reset
-	game_hot_reloaded(g)
-}
-
-@(export)
-game_should_run :: proc() -> bool {
-	when ODIN_OS != .JS {
-		// Never run this proc in browser. It contains a 16 ms sleep on web!
-		if rl.WindowShouldClose() {
-			return false
-		}
-	}
-	return g.app_state != .Exit
-}
-
-@(export)
-game_shutdown :: proc() {
-	free(g.time.local_timezone)
-	free(g)
-}
-
-@(export)
-game_shutdown_window :: proc() {
-	rl.CloseWindow()
-}
-
-@(export)
-game_memory :: proc() -> rawptr {
-	return g
-}
-
-@(export)
-game_memory_size :: proc() -> int {
-	return size_of(Game_Memory)
-}
-
-@(export)
-game_hot_reloaded :: proc(mem: rawptr) {
-	g = (^Game_Memory)(mem)
-
-	// Here you can also set your own global variables. A good idea is to make
-	// your global variables into pointers that point to something inside `g`.
-}
-
-@(export)
-game_force_reload :: proc() -> bool {
-	return rl.IsKeyPressed(.F5)
-}
-
-@(export)
-game_force_restart :: proc() -> bool {
-	return rl.IsKeyPressed(.R)
-}
-
-// In a web build, this is called when browser changes size. Remove the
-// `rl.SetWindowSize` call if you don't want a resizable game.
-game_parent_window_size_changed :: proc(w, h: int) {
-	rl.SetWindowSize(i32(w), i32(h))
-}
-
-game_reset :: proc() {
-	init()
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// Global Input
-///////////////////////////////////////////////////////////////////////////////
-
-Global_Input :: enum {
-	Toggle_Debug,
-	Exit,
-	Exit2,
-	Reset,
-	Toggle_Music,
-}
-
-GLOBAL_INPUT_LOOKUP := [Global_Input]rl.KeyboardKey{
-	.Toggle_Debug = .GRAVE,
-	.Exit = .ESCAPE,
-	.Exit2 = .Q,
-	.Reset = .R,
-	.Toggle_Music = .M,
-}
-
-process_global_input :: proc() {
-	input: bit_set[Global_Input]
-	for key, input_ in GLOBAL_INPUT_LOOKUP {
-		switch input_ {
-		case .Toggle_Debug, .Exit, .Exit2, .Toggle_Music, .Reset:
-			if rl.IsKeyPressed(key) {
-				input += {input_}
-			}
-		}
-	}
-    if .Toggle_Debug in input {
-        g.debug = !g.debug
-    } else if .Exit in input || .Exit2 in input {
-		g.app_state = .Exit
-    } else if .Reset in input {
-		game_reset()
-    } else if .Toggle_Music in input {
-		toggle_music()
-    }
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// Play Scene
-///////////////////////////////////////////////////////////////////////////////
-
-// TODO: mouse play input, see randy and simpler approaches
-// TODO: keyboard inputs: "?" for help modal, h toggle possible moves
-
-Play_Action :: enum {
-	None,
-	Left_Click_Board,
-}
-
-is_mouse_over_board :: proc() -> bool {
-	return is_mouse_over_rect(BOARD_BOUNDS.x, 
-							  BOARD_BOUNDS.y, 
-							  BOARD_BOUNDS.width, 
-							  BOARD_BOUNDS.height)
-}
-
-process_play_input :: proc(s: ^Play_Scene) -> Play_Action {
-	if is_mouse_over_board() && rl.IsMouseButtonPressed(.LEFT) {
-		return .Left_Click_Board
-	}
-	return .None
-}
-
-draw_sprite :: proc(
-	texture_id: Texture_ID, 
-	pos: Vec2, 
-	size: Vec2, 
-	rotation: f32 = 0, 
-	scale: f32 = 1, 
-	tint: rl.Color = rl.WHITE
-) {
-	tex := get_texture(texture_id)
-	src_rect := Rec {
-		0, 0, f32(tex.width), f32(tex.height),
-	}
-	dst_rect := Rec {
-		pos.x, pos.y, size.x, size.y,
-	}
-	rl.DrawTexturePro(tex, src_rect, dst_rect, {}, rotation, tint)
-}
-
-make_duration_display_string :: proc(d: time.Duration) -> cstring {
-	h,m,s := time.clock_from_duration(d)
-	cstr := fmt.ctprintf("%dh %dm %ds", h,m,s)
-	return cstr
-}
-
-make_datetime_display_string :: proc(dt: datetime.DateTime) -> cstring {
-	if e := datetime.validate(dt); e != .None {
-		// log.error("Failed datetime validation:", e)
-		return fmt.ctprint("Invalid date")
-	}
-	return fmt.ctprintf("%v %v, %v %v:%v:%v", 
-						get_month_by_seq(dt.month), 
-						dt.day,
-						dt.year,
-						dt.hour,
-						dt.minute,
-						dt.second)
-}
-
-// get position of top left corner of tile in render (render logical) coords from game logical coords board tile pos
-board_tile_pos_to_sprite_logical_render_pos :: proc(x, y: i32) -> Vec2 {
-	// origin is bottom left of board
-	pos := Vec2{BOARD_BOUNDS.x + f32(x) * TILE_SIZE, 
-				BOARD_BOUNDS.y + BOARD_BOUNDS.height - f32(y+1) * TILE_SIZE}
-	return pos
-}
-
-aabb_intersects :: proc(a_x, a_y, a_w, a_h: f32, b_x, b_y, b_w, b_h: f32) -> bool {
-    return !(a_x + a_w < b_x ||
-           b_x + b_w < a_x ||
-           a_y + a_h < b_y ||
-           b_y + b_h < a_y)
-}
-
-toggle_music :: proc() {
-	g.is_music_enabled = !g.is_music_enabled
-}
-
-begin_letterbox_rendering :: proc() {
-	rl.BeginTextureMode(g.render_texture)
-	rl.ClearBackground(BACKGROUND_COLOR)
-	
-	// Scale all drawing by RENDER_TEXTURE_SCALE for higher resolution
-	camera := rl.Camera2D{
-		zoom = RENDER_TEXTURE_SCALE,
-		// no offset for chess
-		// offset = { 
-		// 	LOGICAL_SCREEN_WIDTH * RENDER_TEXTURE_SCALE / 2,
-		// 	LOGICAL_SCREEN_HEIGHT * RENDER_TEXTURE_SCALE / 2
-		// },
-	}
-	rl.BeginMode2D(camera)
-}
-
-end_letterbox_rendering :: proc() {
-	rl.EndMode2D()  // End the scale transform
-	rl.EndTextureMode()
-	
-	rl.BeginDrawing()
-	rl.ClearBackground(rl.BLACK)
-	
-	// Calculate letterbox dimensions
-	viewport_width, viewport_height := get_viewport_size()
-	offset_x, offset_y := get_viewport_offset()
-	
-	// Draw the render texture with letterboxing
-	render_texture_width: f32 = LOGICAL_SCREEN_WIDTH * RENDER_TEXTURE_SCALE
-	render_texture_height: f32 = LOGICAL_SCREEN_HEIGHT * RENDER_TEXTURE_SCALE
-	src := Rec{0, 0, render_texture_width, -render_texture_height} // negative height flips texture
-	dst := Rec{-offset_x, -offset_y, viewport_width, viewport_height}
-	rl.DrawTexturePro(g.render_texture.texture, src, dst, {}, 0, rl.WHITE)
-	// rl.EndDrawing() // moved outside for debug overlay
-}
-
-get_viewport_scale :: proc() -> f32 {
-	window_w := f32(rl.GetScreenWidth())
-	window_h := f32(rl.GetScreenHeight())
-	scale := min(window_w / LOGICAL_SCREEN_WIDTH, window_h / LOGICAL_SCREEN_HEIGHT)
-	return scale
-}
-
-get_viewport_size :: proc() -> (width, height: f32) {
-	scale := get_viewport_scale()
-	width = LOGICAL_SCREEN_WIDTH * scale
-	height = LOGICAL_SCREEN_HEIGHT * scale
-	return width, height
-}
-
-get_viewport_offset :: proc() -> (f32,f32) {
-	window_w := f32(rl.GetScreenWidth())
-	window_h := f32(rl.GetScreenHeight())
-	viewport_width, viewport_height := get_viewport_size()
-	off_x := -(window_w - viewport_width) / 2
-	off_y := -(window_h - viewport_height) / 2
-	return off_x, off_y
-}
-
-is_in_bounds :: proc(x,y: i32) -> bool {
-	return !(x < 0 || x > 7 || y < 0 || y > 7)
-}
-
-// Also tests for board boundary
-get_tile_by_position :: proc(tiles: Tiles, pos: Position) -> (tile: Tile, in_bounds: bool) {
-	if !is_in_bounds(pos.x, pos.y){
-		return {}, false
-	}
-	return tiles[pos.y][pos.x], true
-}
-
-get_piece_by_position :: proc(tiles: Tiles, pos: Position) -> (piece: Piece, is_piece: bool) {
-	tile, in_bounds := get_tile_by_position(tiles, pos)
-	if !in_bounds {
-		return {}, false
-	}
-	if tile_piece, piece_ok := tile.(Piece); piece_ok {
-		return tile_piece, true
-	}
-	return {}, false
-
-}
-
 init_board :: proc() -> Board {
 	positions_with_pieces := [BOARD_LENGTH][BOARD_LENGTH]Piece_Type{
 		{.Rook, .Knight, .Bishop, .Queen, .King, .Bishop, .Knight, .Rook},
@@ -1690,7 +1725,8 @@ ALL_DIRECTIONS :: [8]Vec2i{
 }
 
 // Previously named get_possible_moves. Moves that are presented to player for a given piece (position)
-get_blind_moves :: proc(board: Board, pos: Position, player_color: Player_Color) -> Move_Results {
+get_moves_for_position :: proc(board: Board, pos: Position, player_color: Player_Color) -> Move_Results {
+	// TODO: use get_pice_by_position
 	_tile, _ := get_tile_by_position(board.tiles, pos)
 
 	if empty, ok := _tile.(Empty_Tile); ok {
@@ -1983,8 +2019,8 @@ get_threatened_positions_by_piece :: proc(
 	threatened_positions: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Position), 
 	is_en_passant: bool
 ) {
-	// Add standard blind moves first
-	enemy_blind_moves := get_blind_moves(board, pos, threatening_player)
+	// Add standard moves first
+	enemy_blind_moves := get_moves_for_position(board, pos, threatening_player)
 	for enemy_blind_move in sa.slice(&enemy_blind_moves) {
 		is_pawn := enemy_blind_move.move_piece_type == .Pawn
 		is_capture_action := enemy_blind_move.piece_action == .Capture
@@ -2624,15 +2660,9 @@ draw_pieces_from_board :: proc(tiles: Tiles) {
 	}
 }
 
-draw_selected_piece_overlay :: proc(selected_piece: ^Selected_Piece_Data) {
-	selected_piece_tile_pos := selected_piece.position
-
-	// Highlight selected piece
-	draw_tile_border(selected_piece_tile_pos, rl.GREEN)
-
-	// Draw possible moves
-	for move_result in sa.slice(&selected_piece.possible_moves) {
-		draw_tile_border(move_result.new_position, rl.PURPLE)
+draw_selected_piece_move_overlay :: proc(selected_piece: ^Selected_Piece_Data) {
+	for legal_move in sa.slice(&selected_piece.legal_moves) {
+		draw_tile_border(legal_move.new_position, rl.PURPLE)
 	}
 }
 
