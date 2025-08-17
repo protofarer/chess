@@ -333,7 +333,6 @@ update :: proc() {
 
 				// Click on a friendly piece to run selection logic, no move possible from this action
 				if ok_clicked_piece && clicked_piece.color == g.board.current_player {
-					pr("in friendly piece logic")
 					if is_piece_selected {
 						if selected_piece.position != clicked_tile_pos {
 							legal_moves := g.board.legal_moves
@@ -460,7 +459,9 @@ draw :: proc() {
 	rl.BeginMode2D(ui_camera())
 		// Top Status Bar
 		{
-			rl.GuiStatusBar({0,0,LOGICAL_SCREEN_WIDTH, TOPBAR_HEIGHT}, "")
+			topbar_width: f32 = LOGICAL_SCREEN_WIDTH
+			topbar_height: f32 = TOPBAR_HEIGHT
+			rl.GuiStatusBar({0,0,topbar_width, topbar_height}, "")
 			y :f32= 4
 			x: f32 = 5
 			if rl.GuiButton({x,y,70,15}, "New Game") do pr("Click New Game")
@@ -484,8 +485,13 @@ draw :: proc() {
 				 g.app_state = .Exit
 			}
 
-			top_bar_message := fmt.ctprintf("%v %v", g.message, g.dead_position_message)
-			rl.DrawText(top_bar_message, 180, 27, 8, rl.RED)
+
+			// centering logic
+			// title_width := rl.MeasureText(fmt.ctprint(title), 32)
+			// rl.DrawText(fmt.ctprint(title), panel_x + i32((panel_width - title_width) / 2), panel_y + 20, 32, rl.YELLOW)
+			topbar_message := fmt.ctprintf("%v %v", g.message, g.dead_position_message)
+			topbar_message_width := rl.MeasureText(topbar_message, 8)
+			rl.DrawText(topbar_message, i32((i32(topbar_width) - topbar_message_width)/2), 27, 8, rl.RED)
 		}
 
 		// White Panel (Left)
@@ -560,6 +566,10 @@ draw :: proc() {
 
 		if g.turn_step == .Choose_Promotion_Piece {
 			draw_promotion_piece_frame()
+		}
+
+		if g.show_help {
+			draw_help_modal()
 		}
 
 		// Draw Checkmate / Gameover state
@@ -2834,4 +2844,91 @@ draw_debug_overlay :: proc() {
 		y += 40
 		debug_overlay_text_column(&x, &y, arr3[:])
 	}
+}
+
+draw_help_modal :: proc() {
+    // Semi-transparent dark background
+    rl.DrawRectangle(0, 0, LOGICAL_SCREEN_WIDTH, LOGICAL_SCREEN_HEIGHT, {0, 0, 0, 150})
+    
+    // Main panel background
+    panel_width :: LOGICAL_SCREEN_WIDTH * 0.7
+    panel_height := i32(math.round(f32(LOGICAL_SCREEN_HEIGHT * 0.7)))
+    panel_x := i32((LOGICAL_SCREEN_WIDTH - panel_width) / 2)
+    panel_y := i32( math.round(f32(LOGICAL_SCREEN_HEIGHT - panel_height) / 2) )
+    
+    // Panel shadow
+    // rl.DrawRectangle(panel_x + 5, panel_y + 5, panel_width, panel_height, {0, 0, 0, 100})
+    
+    // Panel background
+    rl.DrawRectangle(panel_x, panel_y, panel_width, panel_height, {40, 40, 50, 255})
+    rl.DrawRectangleLines(panel_x, panel_y, panel_width, panel_height, rl.WHITE)
+    
+    // Title
+    title := "Help"
+	title_font_size: i32 = 20
+    title_width := rl.MeasureText(fmt.ctprint(title), title_font_size)
+    rl.DrawText(fmt.ctprint(title), panel_x + i32((panel_width - title_width) / 2), panel_y + 20, title_font_size, rl.WHITE)
+    
+    // Draw stats in columns
+    col1_x := panel_x + 30
+    col2_x := panel_x + 160
+    y_start := panel_y + 60
+    
+	header_font_size: i32 = 14
+    // Column 1: Option keys
+    y := y_start
+    rl.DrawText("Options", col1_x, y, header_font_size, rl.LIGHTGRAY)
+
+    y += 30
+    rl.DrawText("? : Toggle Help", col1_x, y, 8, rl.WHITE)
+	y += 15
+    rl.DrawText("M : Show Move Overlay", col1_x, y, 8, rl.WHITE)
+	y += 15
+    rl.DrawText("Esc : Exit Program", col1_x, y, 8, rl.WHITE)
+
+	// Column 2: Time
+	y = y_start
+    rl.DrawText("Times", col2_x, y, header_font_size, rl.LIGHTGRAY)
+
+	y += 30
+	game_start_string := make_datetime_display_string(g.time.game_start_datetime)
+	game_start_display := fmt.ctprintf("Game start: %v", game_start_string)
+    rl.DrawText(game_start_display , col2_x, y, 8, rl.WHITE)
+	y += 15
+	timezone_string := g.time.local_timezone.name
+	timezone_display := fmt.ctprintf("Timezone: %v", timezone_string)
+    rl.DrawText(timezone_display , col2_x, y, 8, rl.WHITE)
+	y += 15
+	game_duration_string := make_duration_display_string(g.time.game_duration)
+	game_duration_display := fmt.ctprintf("Game duration: %v", game_duration_string)
+    rl.DrawText(game_duration_display , col2_x, y, 8, rl.WHITE)
+	y += 15
+	turn_duration_string := make_duration_display_string(g.time.turn_duration)
+	turn_duration_display := fmt.ctprintf("Current turn: %v", turn_duration_string)
+    rl.DrawText(turn_duration_display , col2_x, y, 8, rl.WHITE)
+	y += 15
+	white_turn_duration_string := make_duration_display_string(g.time.players_duration[.White])
+	white_turn_duration_display := fmt.ctprintf("White total duration: %v", white_turn_duration_string)
+    rl.DrawText(white_turn_duration_display , col2_x, y, 8, rl.WHITE)
+	y += 15
+	black_turn_duration_string := make_duration_display_string(g.time.players_duration[.Black])
+	black_turn_duration_display := fmt.ctprintf("Black total duration: %v", black_turn_duration_string)
+    rl.DrawText(black_turn_duration_display , col2_x, y, 8, rl.WHITE)
+
+    // Performance info at bottom
+    // perf_y := panel_y + panel_height - 80
+    // rl.DrawLine(panel_x + 20, perf_y - 10, panel_x + panel_width - 20, perf_y - 10, rl.DARKGRAY)
+    //
+    // rl.DrawText(
+    //     fmt.ctprintf("Sample Rate: Every %d frames (%.2fs) | Press 5-7 to adjust", 
+    //         stats.sample_interval, 
+    //         f32(stats.sample_interval) / 60.0), 
+    //     panel_x + 40, perf_y, 14, rl.GRAY)
+    //
+    // rl.DrawText(
+    //     fmt.ctprintf("Last Update: %d frames ago", stats.frames_since_sample), 
+    //     panel_x + 40, perf_y + 20, 14, rl.GRAY)
+    
+    // Close instruction
+    rl.DrawText("Press ? to close this window", panel_x + i32((panel_width - 200) / 2), panel_y + panel_height - 40, 14, rl.LIGHTGRAY)
 }
