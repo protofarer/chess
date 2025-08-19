@@ -31,7 +31,7 @@ WINDOW_H :: 900
 TICK_RATE :: 60
 
 BACKGROUND_COLOR :: rl.GRAY
-DARK_TILE_COLOR :: rl.Color{40,160,40,255}
+DARK_TILE_COLOR :: rl.Color{40,160,40,255} // medium green
 LIGHT_TILE_COLOR :: rl.WHITE
 
 WHITE_PIECE_COLOR :: rl.RAYWHITE
@@ -210,7 +210,7 @@ setup :: proc() {
 		audman = audman,
 	}
 	setup_promotion_piece_data(g_promotion_piece_data[:])
-
+	rl.SetMouseCursor(.POINTING_HAND)
 	update_mouse_transform()
 }
 
@@ -242,18 +242,18 @@ init :: proc() {
 	// g.board = test_init_board_promotion_black()
 
 	// TEST CAPTURES
-	// sa.push(&g.board.captures[.White],
-	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-	// )
-	// sa.push(&g.board.captures[.Black],
-	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-	// 	Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-	// )
+	sa.push(&g.board.captures[.White],
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+	)
+	sa.push(&g.board.captures[.Black],
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+	)
 
 	 // name == "America/New York"
 	if local_timezone, ok_timezone := timezone.region_load("local"); ok_timezone {
@@ -437,12 +437,12 @@ draw :: proc() {
 	switch &s in g.scene {
 	case Play_Scene:
 		draw_board_tiles()
-		draw_pieces_from_board(g.board.tiles)
+		draw_pieces_to_board(g.board.tiles)
 		if selected_piece, ok := g.selected_piece.?; ok {
 
 			selected_piece_tile_pos := selected_piece.position
 			// Highlight selected piece
-			draw_tile_border(selected_piece_tile_pos, rl.GREEN)
+			draw_tile_border(selected_piece_tile_pos, rl.BLUE)
 
 			if g.board.show_move_overlay {
 				draw_selected_piece_move_overlay(&selected_piece)
@@ -456,7 +456,9 @@ draw :: proc() {
 		}
 	}
 
+
 	rl.BeginMode2D(ui_camera())
+		// NB: text size min is 10, steps to 11, 12
 		// Top Status Bar
 		{
 			topbar_width: f32 = LOGICAL_SCREEN_WIDTH
@@ -464,7 +466,10 @@ draw :: proc() {
 			rl.GuiStatusBar({0,0,topbar_width, topbar_height}, "")
 			y :f32= 4
 			x: f32 = 5
-			if rl.GuiButton({x,y,70,15}, "New Game") do pr("Click New Game")
+			if rl.GuiButton({x,y,70,15}, "New Game") {
+				pr("Click New Game")
+				game_reset()
+			}
 			x += 75
 			if rl.GuiButton({x,y,70,15}, "Draw") {
 				pr("Click Draw")
@@ -474,11 +479,15 @@ draw :: proc() {
 			x += 75
 			if rl.GuiButton({x,y,15,15}, "#193#") {
 				pr("Click Help")
+				g.show_help = true
 			}
+
 			x += 70
-			rl.DrawText(make_duration_display_string(get_game_duration()), i32(x), 7, 8, rl.WHITE)
+			rl.GuiDrawIcon(.ICON_CLOCK, i32(x-20),i32(y-2),1,rl.WHITE)
+
+			rl.DrawText(make_duration_display_string(get_game_duration()), i32(x), 7, 11, rl.WHITE)
 			x += 80
-			rl.DrawText(fmt.ctprintf("Turn: %v", g.board.n_turns), i32(x), 7, 8, rl.WHITE)
+			rl.DrawText(fmt.ctprintf("Turn: %v", g.board.n_turns), i32(x), 7, 11, rl.WHITE)
 
 			if rl.GuiButton({465,y,70,15}, "Exit") {
 				 pr("Click Exit")
@@ -494,15 +503,22 @@ draw :: proc() {
 			rl.DrawText(topbar_message, i32((i32(topbar_width) - topbar_message_width)/2), 27, 8, rl.RED)
 		}
 
+		ygap :: 22
+		PANEL_BORDER_THICKNESS :: 2
 		// White Panel (Left)
 		{
 			white_panel_bounds := LEFT_PANEL_BOUNDS
 			rl.GuiPanel(white_panel_bounds, nil)
+			if g.current_player == .White {
+				rl.DrawRectangleLinesEx(white_panel_bounds, PANEL_BORDER_THICKNESS, rl.GREEN)
+			} else {
+				rl.DrawRectangleLinesEx(white_panel_bounds, PANEL_BORDER_THICKNESS, rl.LIGHTGRAY)
+			}
 			x0 := white_panel_bounds.x
 			y0 := white_panel_bounds.y
 
-			x := x0 + 3
-			y := y0 + 3
+			x := x0 + 5
+			y := y0 + 5
 			rl.GuiLabel({x, y, white_panel_bounds.width, 10}, "White")
 
 			y += 15
@@ -516,29 +532,33 @@ draw :: proc() {
 				rl.GuiLabel({x, y, 100, 10}, cstr_player_turn_duration_text)
 			}
 
-			// Show cap pieces from bottom up
+			// Draw captured pieces from bottom up
 			xcap :i32= i32(x0 + 10)
 			ycap :i32= i32(white_panel_bounds.y + white_panel_bounds.height) - 30 * 9
 			for piece_type,i in sa.slice(&g.board.captures[.White]) {
 				if i % 8 == 0 && i > 0 {
 					 xcap += 40
-					 ycap -= 240
+					 ycap -= 8 * ygap
 				}
-				ycap += 30
-				draw_piece(piece_type, .Black, xcap,ycap)
+				ycap += ygap
+				draw_piece_sprite({xcap, ycap}, 0.8, piece_type, .Black)
 			}
 		}
-		
 		// Black Panel (Right)
 		{
 			black_panel_bounds := RIGHT_PANEL_BOUNDS
 			rl.GuiPanel(black_panel_bounds, nil)
+			if g.current_player == .Black {
+				rl.DrawRectangleLinesEx(black_panel_bounds, PANEL_BORDER_THICKNESS, rl.GREEN)
+			} else {
+				rl.DrawRectangleLinesEx(black_panel_bounds, PANEL_BORDER_THICKNESS, rl.LIGHTGRAY)
+			}
 			x0 := black_panel_bounds.x
 			y0 := black_panel_bounds.y
 
-			x := x0 + 3
-			y := y0 + 3
-			rl.GuiLabel({x, y, black_panel_bounds.width, 10}, "black")
+			x := x0 + 5
+			y := y0 + 5
+			rl.GuiLabel({x, y, black_panel_bounds.width, 10}, "Black")
 
 			y += 15
 			cstr_player_duration_text := make_duration_display_string(get_player_duration(.Black))
@@ -551,16 +571,16 @@ draw :: proc() {
 				rl.GuiLabel({x, y, 100, 10}, cstr_player_turn_duration_text)
 			}
 
-			// Show cap pieces from bottom up
+			// Draw captured pieces from bottom up
 			xcap :i32= i32(x0 + 10)
 			ycap :i32= i32(black_panel_bounds.y + black_panel_bounds.height) - 30 * 9
 			for piece_type,i in sa.slice(&g.board.captures[.Black]) {
 				if i % 8 == 0 && i > 0 {
 					 xcap += 40
-					 ycap -= 240
+					 ycap -= 8 * ygap
 				}
-				ycap += 30
-				draw_piece(piece_type, .White, xcap,ycap)
+				ycap += ygap
+				draw_piece_sprite({xcap, ycap}, .8, piece_type, .White)
 			}
 		}
 
@@ -2227,18 +2247,17 @@ ui_camera :: proc() -> rl.Camera2D {
 	}
 }
 
-draw_piece_on_board :: proc(
-	piece_type: Piece_Type, 
-	piece_color: Piece_Color, 
-	tile_pos: Position
-) {
-	render_pos := board_tile_pos_to_sprite_logical_render_pos(tile_pos.x, tile_pos.y)
-	tile_render_pos_x := i32(math.round(render_pos.x)) + 7
-	tile_render_pos_y := i32(math.round(render_pos.y)) + 7
-	draw_piece(piece_type, piece_color, tile_render_pos_x, tile_render_pos_y)
+draw_piece_sprite :: proc(render_position: Vec2i, scale: f32 = 1, piece_type: Piece_Type, piece_color: Piece_Color) {
+	tex := get_texture_by_piece_type(piece_type)
+
+	// set src/dst rectangels
+	src_rect := Rec{0,0,f32(tex.width), f32(tex.height)}
+	dst_rect := Rec{f32(render_position.x), f32(render_position.y), f32(TILE_SIZE) * scale, f32(TILE_SIZE) * scale}
+	tint := piece_color == .White ? WHITE_PIECE_COLOR : BLACK_PIECE_COLOR
+	rl.DrawTexturePro(tex, src_rect, dst_rect, {}, 0, tint)
 }
 
-draw_piece :: proc(piece_type: Piece_Type, piece_color: Piece_Color, x,y: i32) {
+draw_piece_character :: proc(piece_type: Piece_Type, piece_color: Piece_Color, tile_position: Position) {
 	text: cstring
 	color := piece_color == .White ? rl.BEIGE : rl.BROWN
 	switch piece_type {
@@ -2256,10 +2275,10 @@ draw_piece :: proc(piece_type: Piece_Type, piece_color: Piece_Color, x,y: i32) {
 		text = fmt.ctprintf("P")
 	case .None:
 	}
-	rl.DrawText(text, x, y, 28, color)
+	rl.DrawText(text, tile_position.x, tile_position.y, 28, color)
 
 	if g.debug {
-		rl.DrawRectangle(i32(x), i32(y), 1, 1, rl.RED)
+		rl.DrawRectangle(i32(tile_position.x), i32(tile_position.y), 1, 1, rl.RED)
 	}
 }
 
@@ -2645,26 +2664,24 @@ draw_board_tiles :: proc() {
 	}
 }
 
-draw_pieces_from_board :: proc(tiles: Tiles) {
+draw_pieces_to_board :: proc(tiles: Tiles) {
 	for row, y in g.board.tiles {
 		for tile, x in row {
 			if piece, is_piece := tile.(Piece); is_piece {
-				// get texture
-				tex := get_texture_by_piece_type(piece.type)
-
 				// get sprite render origin
 				render_pos := board_tile_pos_to_sprite_logical_render_pos(i32(x), i32(y))
-				tile_render_pos_x := i32(math.round(render_pos.x))
-				tile_render_pos_y := i32(math.round(render_pos.y))
 
-				// set src/dst rectangels
-				src_rect := Rec{0,0,f32(tex.width), f32(tex.height)}
-				dst_rect := Rec{f32(tile_render_pos_x), f32(tile_render_pos_y), f32(TILE_SIZE), f32(TILE_SIZE)}
-				tint := piece.color == .White ? WHITE_PIECE_COLOR : BLACK_PIECE_COLOR
-				rl.DrawTexturePro(tex, src_rect, dst_rect, {}, 0, tint)
+				// scale: f32 = 1
+				scale: f32 = 32/TILE_SIZE
 
-				// DrawTexturePro
-				// draw_piece_on_board(piece.type, piece.color, {i32(x),i32(y)})
+				// center
+				center_delta := (TILE_SIZE - (scale * TILE_SIZE)) / 2
+				render_pos_center_x := render_pos.x + center_delta
+				render_pos_center_y := render_pos.y + center_delta
+				tile_render_pos_x := i32(math.round(render_pos_center_x))
+				tile_render_pos_y := i32(math.round(render_pos_center_y))
+
+				draw_piece_sprite({tile_render_pos_x ,tile_render_pos_y}, scale, piece.type, piece.color)
 			}
 		}
 	}
@@ -2879,7 +2896,7 @@ draw_help_modal :: proc() {
     y := y_start
     rl.DrawText("Options", col1_x, y, header_font_size, rl.LIGHTGRAY)
 
-    y += 30
+    y += 25
     rl.DrawText("? : Toggle Help", col1_x, y, 8, rl.WHITE)
 	y += 15
     rl.DrawText("M : Show Move Overlay", col1_x, y, 8, rl.WHITE)
@@ -2890,19 +2907,19 @@ draw_help_modal :: proc() {
 	y = y_start
     rl.DrawText("Times", col2_x, y, header_font_size, rl.LIGHTGRAY)
 
-	y += 30
+	y += 25
 	game_start_string := make_datetime_display_string(g.time.game_start_datetime)
 	game_start_display := fmt.ctprintf("Game start: %v", game_start_string)
     rl.DrawText(game_start_display , col2_x, y, 8, rl.WHITE)
-	y += 15
-	timezone_string := g.time.local_timezone.name
-	timezone_display := fmt.ctprintf("Timezone: %v", timezone_string)
-    rl.DrawText(timezone_display , col2_x, y, 8, rl.WHITE)
 	y += 15
 	game_duration_string := make_duration_display_string(g.time.game_duration)
 	game_duration_display := fmt.ctprintf("Game duration: %v", game_duration_string)
     rl.DrawText(game_duration_display , col2_x, y, 8, rl.WHITE)
 	y += 15
+	timezone_string := g.time.local_timezone.name
+	timezone_display := fmt.ctprintf("Timezone: %v", timezone_string)
+    rl.DrawText(timezone_display , col2_x, y, 8, rl.WHITE)
+	y += 20
 	turn_duration_string := make_duration_display_string(g.time.turn_duration)
 	turn_duration_display := fmt.ctprintf("Current turn: %v", turn_duration_string)
     rl.DrawText(turn_duration_display , col2_x, y, 8, rl.WHITE)
@@ -2930,5 +2947,16 @@ draw_help_modal :: proc() {
     //     panel_x + 40, perf_y + 20, 14, rl.GRAY)
     
     // Close instruction
-    rl.DrawText("Press ? to close this window", panel_x + i32((panel_width - 200) / 2), panel_y + panel_height - 40, 14, rl.LIGHTGRAY)
+	close_text_x := panel_x + i32((panel_width - 200) / 2)
+	close_text_y := panel_y + panel_height - 40
+    rl.DrawText("Press  ?  to close this window", close_text_x, close_text_y, 14, rl.LIGHTGRAY)
+	if rl.GuiButton({f32(close_text_x + 47), f32(close_text_y - 1),15,15}, "#193#") {
+		pr("click close help modal")
+		g.show_help = false
+	}
+	// draw close button
+	if rl.GuiButton({f32(panel_x + panel_width - 22), f32(panel_y + 6), 15, 15}, "x") {
+		pr("click close help modal")
+		g.show_help = false
+	}
 }
