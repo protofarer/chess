@@ -49,8 +49,6 @@ Game_Memory :: struct {
 	is_music_enabled: bool,
 	using board: Board,
 	time: Game_Time,
-	message: string,
-	dead_position_message: string,
 }
 
 Game_Time :: struct {
@@ -73,8 +71,6 @@ Board :: struct {
 	current_player: Player_Color,
 	is_white_bottom: bool, // predom for multiplayer
 
-	selected_piece: Maybe(Selected_Piece_Data),
-
 	last_double_move_end_position: Position,
 	last_double_move_turn: i32,
 
@@ -89,7 +85,7 @@ Board :: struct {
 
 	draw_offered: [Player_Color]i32, // offered on turn number
 
-	turn_step: Turn_Step,
+	turn_phase: Turn_Phase,
 
 	has_board_evaluated_this_turn: bool,
 	can_kingside_castle: [Player_Color]bool,
@@ -103,6 +99,8 @@ Board :: struct {
 
 	show_move_overlay: bool,
 	show_help: bool,
+	message: string,
+	dead_position_message: string,
 }
 
 Tiles :: [BOARD_LENGTH][BOARD_LENGTH]Tile
@@ -170,12 +168,19 @@ PIECE_POINTS := [Piece_Type]i32{
 	.King = 0,
 }
 
-Turn_Step :: enum {
+Turn_Phase :: union #no_nil {
 	Eval, // start here
 	Try_Move, // loop until legal move
 	Choose_Promotion_Piece, // select promotion piece
 	End, // ends here
 }
+
+Eval :: distinct Void
+Try_Move :: struct {
+	selected_piece: Maybe(Selected_Piece_Data),
+}
+Choose_Promotion_Piece :: distinct Void
+End :: distinct Void
 
 g: ^Game_Memory
 
@@ -224,6 +229,7 @@ init :: proc() {
 
 	// TEST BOARDS
 	// g.board = test_init_white_checked_board()
+	// g.board = test_init_black_checked_board()
 	// g.board = test_init_trapped_king_board()
 	// g.board = test_init_board_king_cannot_capture_check()
 	// g.board = test_init_board_king_threatening_ray()
@@ -242,18 +248,7 @@ init :: proc() {
 	// g.board = test_init_board_promotion_black()
 
 	// TEST CAPTURES
-	sa.push(&g.board.captures[.White],
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-	)
-	sa.push(&g.board.captures[.Black],
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
-	)
+	init_test_captures()
 
 	 // name == "America/New York"
 	if local_timezone, ok_timezone := timezone.region_load("local"); ok_timezone {
@@ -301,34 +296,36 @@ update :: proc() {
 	// next_scene: Maybe(Scene) = nil
 	switch &s in g.scene {
 	case Play_Scene:
-		switch g.board.turn_step {
+		switch v in g.board.turn_phase {
 
-		case .Eval:
+		case Eval:
 			eval_board(&g.board)
-			g.board.turn_step = .Try_Move
+			g.board.turn_phase = Try_Move{}
 
 		// aka read and evaluate player input. aka Player_Action
-			// TODO: CSDR Turn_Step Read_And_Respond_Player_Input aka Player_Action
+			// TODO: CSDR turn_phase Read_And_Respond_Player_Input aka Player_Action
 			// read input, do something on input. Conditionally goto Make_Move turnstep
-			// TODO: CSDR Turn_Step Make_Move
-		case .Try_Move:
+			// TODO: CSDR turn_phase Make_Move
+		case Try_Move:
 			action := process_play_input(&s)
 
 			switch action {
 
 			case .Toggle_Move_Overlay:
 				toggle_move_overlay()
+				log.debug("Toggled move overlay")
 				return
 
 			case .Toggle_Help:
 				toggle_help()
+				log.debug("Toggled help modal")
 				return
 
 			case .Left_Click_Board:
 
 				// Selected Piece Logic
 				clicked_tile_pos := get_tile_position_from_mouse_already_over_board()
-				selected_piece, is_piece_selected := g.selected_piece.?
+				selected_piece, is_piece_selected := g.turn_phase.(Try_Move).selected_piece.?
 				clicked_piece, ok_clicked_piece := get_piece_by_position(g.board.tiles, clicked_tile_pos)
 
 				// Click on a friendly piece to run selection logic, no move possible from this action
@@ -341,13 +338,15 @@ update :: proc() {
 								position = clicked_tile_pos,
 								legal_moves = selected_legal_moves,
 							}
-							g.selected_piece = new_selected_piece
+							g.turn_phase = Try_Move{
+								selected_piece = new_selected_piece
+							}
 							play_sfx(.Pickup)
 							pr("Action: Select_Another_Piece")
 						} else {
-							g.selected_piece = nil
+							g.board.turn_phase = Try_Move{}
 							play_sfx(.Drop)
-							pr("Action: DeSelect_Piece")
+							log.debug("DeSelect_Piece")
 						}
 					} else {
 							legal_moves := g.board.legal_moves
@@ -356,20 +355,22 @@ update :: proc() {
 								position = clicked_tile_pos,
 								legal_moves = selected_legal_moves,
 							}
-							g.selected_piece = new_selected_piece
+							g.turn_phase = Try_Move{
+								selected_piece = new_selected_piece,
+							}
 							play_sfx(.Pickup)
-							pr("Action: Select_Piece")
+							log.debug("Select_Piece")
 					}
 
 				// No piece selected and click on empty position or enemy piece, no move possible from this action
 				} else if !is_piece_selected && (!ok_clicked_piece || clicked_piece.color != g.board.current_player) {
 					// TODO: empty / null action sound. Like hearthstone sound of clicking on non-actionable area aka empty part of play area
-					pr("Action: None")
+					log.debug("No action")
 
 				// Try move with selected piece
 				} else if is_piece_selected {
 
-					proposed_move := Move_Result{
+					proposed_move := Move_Data{
 						old_position = selected_piece.position,
 						new_position = clicked_tile_pos,
 						piece_action = .None,
@@ -385,12 +386,13 @@ update :: proc() {
 					// legality via piece_action
 					if proposed_move.piece_action != .None {
 						make_move(&g.board, proposed_move)
+						log.debug("Move, data:", proposed_move)
 						play_sfx(.Drop)
 
 						if promotion_available := eval_promotion(&g.board); promotion_available {
-								g.board.turn_step = .Choose_Promotion_Piece
+								g.board.turn_phase = Choose_Promotion_Piece{}
 						} else {
-							g.board.turn_step = .End
+							g.board.turn_phase = End{}
 						}
 
 					} else {
@@ -400,7 +402,7 @@ update :: proc() {
 			case .None:
 			}
 
-		case .Choose_Promotion_Piece:
+		case Choose_Promotion_Piece:
 			if pos_to_promote, ok_pos := g.board.tile_pos_to_promote.(Position); ok_pos {
 				for data, i in g_promotion_piece_data {
 					// TODO: integrate this with existing process_play_input?
@@ -414,16 +416,18 @@ update :: proc() {
 							has_moved = true
 						})
 						g.board.tile_pos_to_promote = nil
-						g.board.turn_step = .End
+
+						log.debug("Promoted pawn to", piece_type)
+						g.board.turn_phase = End{}
 					}
 				}
 			} else {
-				g.board.turn_step = .End
+				g.board.turn_phase = End{}
 			}
 
-		case .End:
+		case End:
 			end_turn(&g.board, &g.time)
-			g.board.turn_step = .Eval
+			g.board.turn_phase = Eval{}
 		}
 
 		g.time.game_duration = time.tick_since(g.time.game_start)
@@ -437,17 +441,22 @@ draw :: proc() {
 	switch &s in g.scene {
 	case Play_Scene:
 		draw_board_tiles()
-		draw_pieces_to_board(g.board.tiles)
-		if selected_piece, ok := g.selected_piece.?; ok {
 
-			selected_piece_tile_pos := selected_piece.position
-			// Highlight selected piece
-			draw_tile_border(selected_piece_tile_pos, rl.BLUE)
+		if try_move_data, ok := g.board.turn_phase.(Try_Move); ok {
+			selected_piece, ok_selected_piece := g.board.turn_phase.(Try_Move).selected_piece.?
+			if ok_selected_piece {
+				selected_piece_tile_pos := selected_piece.position
+				// Highlight selected piece
+				draw_tile_border(selected_piece_tile_pos, rl.BLUE)
 
-			if g.board.show_move_overlay {
-				draw_selected_piece_move_overlay(&selected_piece)
+				if  g.board.show_move_overlay {
+					draw_selected_piece_move_overlay(&selected_piece)
+				}
 			}
 		}
+
+
+		draw_pieces_to_board(g.board.tiles)
 		if g.board.is_check {
 			draw_check_overlay(g.board.tiles, g.board.current_player)
 		}
@@ -474,7 +483,7 @@ draw :: proc() {
 			if rl.GuiButton({x,y,70,15}, "Draw") {
 				pr("Click Draw")
 				g.draw_offered[g.current_player] = g.n_turns
-				g.turn_step = .End
+				g.turn_phase = End{}
 			}
 			x += 75
 			if rl.GuiButton({x,y,15,15}, "#193#") {
@@ -503,88 +512,65 @@ draw :: proc() {
 			rl.DrawText(topbar_message, i32((i32(topbar_width) - topbar_message_width)/2), 27, 8, rl.RED)
 		}
 
-		ygap :: 22
-		PANEL_BORDER_THICKNESS :: 2
-		// White Panel (Left)
-		{
-			white_panel_bounds := LEFT_PANEL_BOUNDS
-			rl.GuiPanel(white_panel_bounds, nil)
-			if g.current_player == .White {
-				rl.DrawRectangleLinesEx(white_panel_bounds, PANEL_BORDER_THICKNESS, rl.GREEN)
+		draw_player_panel :: proc(panel_bounds: Rec, player_color: Player_Color, current_player: Player_Color, title: string, player_total_duration: time.Duration, turn_duration: time.Duration, captures: []Piece_Type, is_check: bool) {
+			ygap :: 22
+			PANEL_BORDER_THICKNESS :: 2
+			is_current_player := player_color == current_player
+
+			rl.GuiPanel(panel_bounds, nil)
+			if is_current_player {
+				rl.DrawRectangleLinesEx(panel_bounds, PANEL_BORDER_THICKNESS, rl.GREEN)
 			} else {
-				rl.DrawRectangleLinesEx(white_panel_bounds, PANEL_BORDER_THICKNESS, rl.LIGHTGRAY)
+				rl.DrawRectangleLinesEx(panel_bounds, PANEL_BORDER_THICKNESS, rl.LIGHTGRAY)
 			}
-			x0 := white_panel_bounds.x
-			y0 := white_panel_bounds.y
+			x0 := panel_bounds.x
+			y0 := panel_bounds.y
 
 			x := x0 + 5
 			y := y0 + 5
-			rl.GuiLabel({x, y, white_panel_bounds.width, 10}, "White")
+			rl.GuiLabel({x, y, panel_bounds.width, 10}, strings.clone_to_cstring(title))
 
 			y += 15
-			cstr_player_duration := make_duration_display_string(get_player_duration(.White))
+			cstr_player_duration := make_duration_display_string(player_total_duration)
 			rl.GuiLabel({x, y, 100, 10}, cstr_player_duration)
 
-			if g.current_player == .White {
+			if is_current_player {
 				y += 15
-				cstr_turn_duration := make_duration_display_string(get_turn_duration())
+				cstr_turn_duration := make_duration_display_string(turn_duration)
 				cstr_player_turn_duration_text := fmt.ctprintf("+%v", cstr_turn_duration)
 				rl.GuiLabel({x, y, 100, 10}, cstr_player_turn_duration_text)
+
+				if g.is_check {
+					y += 15
+					rl.DrawText("CHECK", i32(x + 50), i32(y0 + 5), 10, rl.RED)
+				}
 			}
 
 			// Draw captured pieces from bottom up
 			xcap :i32= i32(x0 + 10)
-			ycap :i32= i32(white_panel_bounds.y + white_panel_bounds.height) - 30 * 9
-			for piece_type,i in sa.slice(&g.board.captures[.White]) {
+			ycap :i32= i32(panel_bounds.y + panel_bounds.height) - 30 * 9
+			for piece_type,i in captures {
 				if i % 8 == 0 && i > 0 {
 					 xcap += 40
 					 ycap -= 8 * ygap
 				}
 				ycap += ygap
-				draw_piece_sprite({xcap, ycap}, 0.8, piece_type, .Black)
+				draw_piece_sprite({xcap, ycap}, 0.8, piece_type, get_other_player_color(player_color))
 			}
 		}
+
+		// White Panel (Left)
+		turn_duration := get_turn_duration()
+		white_panel_bounds := LEFT_PANEL_BOUNDS
+		white_total_duration := get_player_duration(.White)
+		draw_player_panel(white_panel_bounds, .White, g.current_player, "White", white_total_duration, turn_duration, sa.slice(&g.board.captures[.White]), g.is_check)
+
 		// Black Panel (Right)
-		{
-			black_panel_bounds := RIGHT_PANEL_BOUNDS
-			rl.GuiPanel(black_panel_bounds, nil)
-			if g.current_player == .Black {
-				rl.DrawRectangleLinesEx(black_panel_bounds, PANEL_BORDER_THICKNESS, rl.GREEN)
-			} else {
-				rl.DrawRectangleLinesEx(black_panel_bounds, PANEL_BORDER_THICKNESS, rl.LIGHTGRAY)
-			}
-			x0 := black_panel_bounds.x
-			y0 := black_panel_bounds.y
+		black_panel_bounds := RIGHT_PANEL_BOUNDS
+		black_total_duration := get_player_duration(.Black)
+		draw_player_panel(black_panel_bounds, .Black, g.current_player, "Black", black_total_duration, turn_duration, sa.slice(&g.board.captures[.Black]), g.is_check)
 
-			x := x0 + 5
-			y := y0 + 5
-			rl.GuiLabel({x, y, black_panel_bounds.width, 10}, "Black")
-
-			y += 15
-			cstr_player_duration_text := make_duration_display_string(get_player_duration(.Black))
-			rl.GuiLabel({x, y, 100, 10}, cstr_player_duration_text)
-
-			if g.current_player == .Black {
-				y += 15
-				cstr_turn_duration := make_duration_display_string(get_turn_duration())
-				cstr_player_turn_duration_text := fmt.ctprintf("+%v", cstr_turn_duration)
-				rl.GuiLabel({x, y, 100, 10}, cstr_player_turn_duration_text)
-			}
-
-			// Draw captured pieces from bottom up
-			xcap :i32= i32(x0 + 10)
-			ycap :i32= i32(black_panel_bounds.y + black_panel_bounds.height) - 30 * 9
-			for piece_type,i in sa.slice(&g.board.captures[.Black]) {
-				if i % 8 == 0 && i > 0 {
-					 xcap += 40
-					 ycap -= 8 * ygap
-				}
-				ycap += ygap
-				draw_piece_sprite({xcap, ycap}, .8, piece_type, .White)
-			}
-		}
-
-		if g.turn_step == .Choose_Promotion_Piece {
+		if _, ok := g.turn_phase.(Choose_Promotion_Piece); ok {
 			draw_promotion_piece_frame()
 		}
 
@@ -923,7 +909,7 @@ get_piece_by_position :: proc(tiles: Tiles, pos: Position) -> (piece: Piece, is_
 
 }
 
-get_message_for_illegal_move :: proc(board: Board, proposed_move: Move_Result) -> string {
+get_message_for_illegal_move :: proc(board: Board, proposed_move: Move_Data) -> string {
 	// CSDR: improve this function to contain a suite of helpful messages
 	// for now just use eval_move
 	_, message := eval_move(board, proposed_move)
@@ -932,7 +918,7 @@ get_message_for_illegal_move :: proc(board: Board, proposed_move: Move_Result) -
 
 
 // test for legality, if illegal emit message, else approve move
-eval_move :: proc(original_board: Board, proposed_move: Move_Result) -> (
+eval_move :: proc(original_board: Board, proposed_move: Move_Data) -> (
 	is_legal: bool, message: string
 ) {
 	proposed_board := original_board
@@ -956,7 +942,7 @@ eval_move :: proc(original_board: Board, proposed_move: Move_Result) -> (
 }
 
 
-make_move :: proc(board: ^Board, move_result: Move_Result) {
+make_move :: proc(board: ^Board, move_result: Move_Data) {
 	if move_result.piece_action == .None {
 		return
 	}
@@ -1083,7 +1069,7 @@ BLACK_KING_POSITION :: Position{4,BOARD_LENGTH-1}
 BLACK_QUEENSIDE_ROOK_POSITION :: Position{0,BOARD_LENGTH-1}
 BLACK_KINGSIDE_ROOK_POSITION :: Position{BOARD_LENGTH-1,BOARD_LENGTH-1}
 
-get_legal_moves_for_position :: proc(legal_moves: []Move_Result, position: Position) -> (selected_move_results: Move_Results) {
+get_legal_moves_for_position :: proc(legal_moves: []Move_Data, position: Position) -> (selected_move_results: Move_Results) {
 	for m in legal_moves {
 		if m.old_position == position {
 			sa.append(&selected_move_results, m)
@@ -1101,7 +1087,7 @@ eval_board :: proc(board: ^Board) {
 	board.threatened_positions = get_threatened_all_positions_for_player(board^,
 																		 board.current_player)
 	player_moves := get_moves_for_player(board^, board.current_player)
-	board.legal_moves = get_legal_moves(g.board,
+	board.legal_moves = get_legal_moves(board^,
 										board.current_player, 
 										sa.slice(&board.threatened_positions),
 										sa.slice(&player_moves))
@@ -1129,24 +1115,24 @@ eval_board :: proc(board: ^Board) {
 	// No legal moves for either single player
 	if !board.is_check && sa.len(board.legal_moves) == 0 {
 		pr("Game Over: Stalemate, no legal moves left for player")
-		g.message = "Stalemate: No legal moves available for player"
+		board.message = "Stalemate: No legal moves available for player"
 		board.is_draw = true
 		board.gameover = true
 	}
 
 	// Mutual draw
-	draw_offer_black_turn := g.draw_offered[.Black]
-	draw_offer_white_turn := g.draw_offered[.White]
+	draw_offer_black_turn := board.draw_offered[.Black]
+	draw_offer_white_turn := board.draw_offered[.White]
 	if draw_offer_black_turn > 0 && draw_offer_white_turn > 0 {
 		if abs(draw_offer_black_turn - draw_offer_white_turn) == 1{
 			pr("Game Over: Mutual Draw")
-			g.message = "Draw: A tie was agreed to"
-			g.gameover = true
-			g.is_draw = true
+			board.message = "Draw: A tie was agreed to"
+			board.gameover = true
+			board.is_draw = true
 		} else {
 			pr("Reset draw offers")
-			g.draw_offered[.Black] = 0
-			g.draw_offered[.White] = 0
+			board.draw_offered[.Black] = 0
+			board.draw_offered[.White] = 0
 		}
 	}
 
@@ -1248,8 +1234,8 @@ eval_board :: proc(board: ^Board) {
 	// Case King v King
 	is_king_v_king := is_king_only[.White] && is_king_only[.Black]
 	if is_king_v_king {
-		g.is_dead_position = true
-		g.dead_position_message = "King versus King is a dead position. This is a draw."
+		board.is_dead_position = true
+		board.dead_position_message = "King versus King is a dead position. This is a draw."
 	}
 
 
@@ -1264,8 +1250,8 @@ eval_board :: proc(board: ^Board) {
 		}
 	}
 	if is_king_bishop_v_king[.White] || is_king_bishop_v_king[.Black] {
-		g.is_dead_position = true
-		g.dead_position_message = "King versus King & Bishop is a dead position. Consider a draw."
+		board.is_dead_position = true
+		board.dead_position_message = "King versus King & Bishop is a dead position. Consider a draw."
 	}
 
 
@@ -1283,8 +1269,8 @@ eval_board :: proc(board: ^Board) {
 	is_black_king_knight_only := is_only_pieces_left_from_pieces_slice(sa.slice(&pieces[.Black]), black_king_knight_map)
 
 	if is_white_king_knight_only || is_black_king_knight_only {
-		g.is_dead_position = true
-		g.dead_position_message = "King versus King & Knight is a dead position. Consider a draw."
+		board.is_dead_position = true
+		board.dead_position_message = "King versus King & Knight is a dead position. Consider a draw."
 	}
 
 
@@ -1324,8 +1310,8 @@ eval_board :: proc(board: ^Board) {
 	}
 
 	if is_white_king_bishop_only && is_black_king_bishop_only && white_bishop_tile_color == black_bishop_tile_color {
-		g.is_dead_position = true
-		g.dead_position_message = "King & Bishop versus King & Bishop where bishops are same tile color is a dead position. Consider a draw."
+		board.is_dead_position = true
+		board.dead_position_message = "King & Bishop versus King & Bishop where bishops are same tile color is a dead position. Consider a draw."
 	}
 
 
@@ -1336,20 +1322,20 @@ eval_board :: proc(board: ^Board) {
 	// - king & rook cannot have moved
 	// - king move-through and final position must have no piece, nor under threat
 
-	g.can_queenside_castle[board.current_player] = is_castle_available(
+	board.can_queenside_castle[board.current_player] = is_castle_available(
 			board.current_player == .White ? WHITE_KING_POSITION : BLACK_KING_POSITION,
 			board.current_player == .White ? WHITE_QUEENSIDE_ROOK_POSITION : BLACK_QUEENSIDE_ROOK_POSITION,
-			g.board.is_check,
-			g.board.tiles,
-			sa.slice(&g.board.threatened_positions),
+			board.is_check,
+			board.tiles,
+			sa.slice(&board.threatened_positions),
 		)
 
-	g.can_kingside_castle[board.current_player] = is_castle_available(
+	board.can_kingside_castle[board.current_player] = is_castle_available(
 			board.current_player == .White ? WHITE_KING_POSITION : BLACK_KING_POSITION,
 			board.current_player == .White ? WHITE_KINGSIDE_ROOK_POSITION : BLACK_KINGSIDE_ROOK_POSITION,
-			g.board.is_check,
-			g.board.tiles,
-			sa.slice(&g.board.threatened_positions),
+			board.is_check,
+			board.tiles,
+			sa.slice(&board.threatened_positions),
 		)
 }
 
@@ -1499,7 +1485,7 @@ get_legal_moves :: proc(
 	original_board: Board,
 	player_color: Player_Color, 
 	threatened_positions: []Position, 
-	player_moves: []Move_Result
+	player_moves: []Move_Data
 ) -> (
 	legal_moves: Move_Results
 ) {
@@ -1713,9 +1699,8 @@ make_tiles_with_piece_types :: proc(
 }
 
 MAX_ELEMENTS_FOR_MOVE_RESULTS :: BOARD_LENGTH * BOARD_LENGTH
-Move_Results :: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Move_Result)
-Move_Result :: struct {
-	move_piece_type: Piece_Type,
+Move_Results :: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Move_Data)
+Move_Data :: struct {
 	old_position: Position,
 	new_position: Position,
 	piece_action: Piece_Action,
@@ -1792,11 +1777,10 @@ get_moves_for_position :: proc(board: Board, pos: Position, player_color: Player
 			capture_position := board.last_double_move_end_position 
 			capture_offset_y: i32 = player_color == .White ? 1 : -1
 			capture_position.y += capture_offset_y
-			sa.push(&arr, Move_Result{ 
+			sa.push(&arr, Move_Data{ 
 				old_position = pos, 
 				new_position = capture_position, 
 				piece_action = .En_Passant,
-				move_piece_type = .Pawn,
 			})
 			break top_switch
 		}
@@ -1809,11 +1793,10 @@ get_moves_for_position :: proc(board: Board, pos: Position, player_color: Player
 		tile_0, in_bounds := get_tile_by_position(board.tiles, pos_0)
 		tile_0_empty, tile_0_is_empty := tile_0.(Empty_Tile)
 		if tile_0_is_empty && in_bounds {
-			sa.push(&arr, Move_Result{
+			sa.push(&arr, Move_Data{
 				old_position = pos,
 				new_position = pos_0, 
 				piece_action = .Travel,
-				move_piece_type = .Pawn,
 			})
 		} 
 
@@ -1823,11 +1806,10 @@ get_moves_for_position :: proc(board: Board, pos: Position, player_color: Player
 			tile_1, ray2_in_bounds := get_tile_by_position(board.tiles, pos_1)
 			tile_1_empty, tile_1_is_empty := tile_1.(Empty_Tile)
 			if tile_0_is_empty && tile_1_is_empty && ray2_in_bounds {
-				sa.push(&arr, Move_Result{
+				sa.push(&arr, Move_Data{
 					old_position = pos,
 					new_position = pos_1,
 					piece_action = .Travel,
-					move_piece_type = .Pawn,
 				})
 			}
 		}
@@ -1837,11 +1819,10 @@ get_moves_for_position :: proc(board: Board, pos: Position, player_color: Player
 		tile_cap_right_1, _ := get_tile_by_position(board.tiles, capture_position_right_1)
 		tile_cap_right_1_piece, is_tcr1_piece := tile_cap_right_1.(Piece)
 		if is_tcr1_piece && tile_cap_right_1_piece.color != player_color {
-			sa.push(&arr, Move_Result{
+			sa.push(&arr, Move_Data{
 				old_position = pos,
 				new_position = capture_position_right_1,
 				piece_action = .Capture,
-				move_piece_type = .Pawn,
 			})
 		}
 
@@ -1849,11 +1830,10 @@ get_moves_for_position :: proc(board: Board, pos: Position, player_color: Player
 		tile_cap_left_1, _ := get_tile_by_position(board.tiles, capture_position_left_1)
 		tile_cap_left_1_piece, is_tcl1_piece := tile_cap_left_1.(Piece)
 		if is_tcl1_piece && tile_cap_left_1_piece.color != player_color {
-			sa.push(&arr, Move_Result{
+			sa.push(&arr, Move_Data{
 				old_position = pos,
 				new_position = capture_position_left_1,
 				piece_action = .Capture,
-				move_piece_type = .Pawn,
 			})
 		}
 
@@ -1876,19 +1856,17 @@ get_moves_for_position :: proc(board: Board, pos: Position, player_color: Player
 				switch v in target_tile {
 				case Piece:
 					if v.color == get_other_player_color(player_color) {
-						sa.push(&arr, Move_Result{
+						sa.push(&arr, Move_Data{
 							old_position = pos,
 							new_position = target_pos, 
 							piece_action = .Capture,
-							move_piece_type = .Knight,
 						})
 					}
 				case Empty_Tile:
-					sa.push(&arr, Move_Result{
+					sa.push(&arr, Move_Data{
 						old_position = pos,
 						new_position = target_pos,
 						piece_action = .Travel,
-						move_piece_type = .Knight,
 					})
 				}
 			}
@@ -1907,20 +1885,18 @@ get_moves_for_position :: proc(board: Board, pos: Position, player_color: Player
 				switch v in target_tile {
 				case Piece:
 					if v.color == get_other_player_color(player_color) {
-						sa.push(&arr, Move_Result{
+						sa.push(&arr, Move_Data{
 							old_position = pos,
 							new_position = target_pos,
 							piece_action = .Capture,
-							move_piece_type = .Bishop,
 						})
 					}
 					break bishop_ray
 				case Empty_Tile:
-					sa.push(&arr, Move_Result{
+					sa.push(&arr, Move_Data{
 						old_position = pos,
 						new_position = target_pos,
 						piece_action = .Travel,
-						move_piece_type = .Bishop,
 					})
 				}
 			}
@@ -1941,20 +1917,18 @@ get_moves_for_position :: proc(board: Board, pos: Position, player_color: Player
 				switch v in target_tile {
 				case Piece:
 					if v.color == get_other_player_color(player_color) {
-						sa.push(&arr, Move_Result{
+						sa.push(&arr, Move_Data{
 							old_position = pos,
 							new_position = target_pos,
 							piece_action = .Capture,
-							move_piece_type = .Rook,
 						})
 					}
 					break rook_ray
 				case Empty_Tile:
-					sa.push(&arr, Move_Result{
+					sa.push(&arr, Move_Data{
 						old_position = pos,
 						new_position = target_pos,
 						piece_action = .Travel,
-						move_piece_type = .Rook,
 					})
 				}
 			}
@@ -1974,20 +1948,18 @@ get_moves_for_position :: proc(board: Board, pos: Position, player_color: Player
 				switch v in target_tile {
 				case Piece:
 					if v.color == get_other_player_color(player_color) {
-						sa.push(&arr, Move_Result{
+						sa.push(&arr, Move_Data{
 							old_position = pos,
 							new_position = target_pos,
 							piece_action = .Capture,
-							move_piece_type = .Queen,
 						})
 					}
 					break queen_ray
 				case Empty_Tile:
-					sa.push(&arr, Move_Result{
+					sa.push(&arr, Move_Data{
 						old_position = pos,
 						new_position = target_pos,
 						piece_action = .Travel,
-						move_piece_type = .Queen,
 					})
 				}
 			}
@@ -2004,37 +1976,33 @@ get_moves_for_position :: proc(board: Board, pos: Position, player_color: Player
 			switch v in target_tile {
 			case Piece:
 				if v.color == get_other_player_color(player_color) {
-					sa.push(&arr, Move_Result{
+					sa.push(&arr, Move_Data{
 						old_position = pos,
 						new_position = target_pos,
 						piece_action = .Capture,
-						move_piece_type = .King,
 					})
 				}
 				continue
 			case Empty_Tile:
-				sa.push(&arr, Move_Result{
+				sa.push(&arr, Move_Data{
 					old_position = pos,
 					new_position = target_pos,
 					piece_action = .Travel,
-					move_piece_type = .King,
 				})
 			}
 		}
 		if board.can_queenside_castle[player_color] {
-			sa.push(&arr, Move_Result{
+			sa.push(&arr, Move_Data{
 				old_position = pos,
 				new_position = pos + {-2,0},
 				piece_action = .Queenside_Castle,
-				move_piece_type = .King,
 			})
 		}
 		if board.can_kingside_castle[player_color] {
-			sa.push(&arr, Move_Result{
+			sa.push(&arr, Move_Data{
 				old_position = pos,
 				new_position = pos + {2,0},
 				piece_action = .Kingside_Castle,
-				move_piece_type = .King,
 			})
 		}
 	}
@@ -2052,7 +2020,10 @@ get_threatened_positions_by_piece :: proc(
 	// Add standard moves first
 	enemy_blind_moves := get_moves_for_position(board, pos, threatening_player)
 	for enemy_blind_move in sa.slice(&enemy_blind_moves) {
-		is_pawn := enemy_blind_move.move_piece_type == .Pawn
+		// TODO: this is only code that uses move_piece_type from Move_Data. Rm the field, and just lookup piece here.
+		piece, _ := get_piece_by_position(board.tiles, enemy_blind_move.old_position)
+		is_pawn := piece.type == .Pawn
+
 		is_capture_action := enemy_blind_move.piece_action == .Capture
 		is_travel_action := enemy_blind_move.piece_action == .Travel
 
@@ -2229,7 +2200,6 @@ end_turn :: proc(board: ^Board, t: ^Game_Time) {
 }
 
 end_board_turn :: proc(board: ^Board) {
-	board.selected_piece = nil
 	board.n_turns += 1
 	switch board.current_player {
 	case .Black: board.current_player = .White
@@ -2372,6 +2342,21 @@ test_init_white_checked_board :: proc() -> Board {
 		{}, 
 		{}, 
 		{.None,.None,.None,.None,.Queen,.None, .None,.None}, 
+		{}, 
+		{}, 
+		{.None,.None,.None,.King,.None,.None, .None,.None}, 
+	}
+	tiles := make_tiles_with_piece_types(piece_types)
+	return make_board_from_tiles(tiles)
+}
+
+test_init_black_checked_board :: proc() -> Board {
+	piece_types := [BOARD_LENGTH][BOARD_LENGTH]Piece_Type{
+		{.None,.None,.None,.None,.King,.None, .None,.None}, 
+		{}, 
+		{}, 
+		{.None,.None,.None,.Queen,.None,.None, .None,.None}, 
+		{}, 
 		{}, 
 		{}, 
 		{.None,.None,.None,.King,.None,.None, .None,.None}, 
@@ -2689,7 +2674,9 @@ draw_pieces_to_board :: proc(tiles: Tiles) {
 
 draw_selected_piece_move_overlay :: proc(selected_piece: ^Selected_Piece_Data) {
 	for legal_move in sa.slice(&selected_piece.legal_moves) {
-		draw_tile_border(legal_move.new_position, rl.PURPLE)
+		sprite_origin := board_tile_pos_to_sprite_logical_render_pos(legal_move.new_position.x, legal_move.new_position.y)
+		rl.DrawRectangleLinesEx({sprite_origin.x, sprite_origin.y, TILE_SIZE, TILE_SIZE},2, rl.GRAY)
+		rl.DrawRectangle(i32(sprite_origin.x+1), i32(sprite_origin.y+1), i32(TILE_SIZE-2), i32(TILE_SIZE-2), rl.BLUE)
 	}
 }
 
@@ -2825,13 +2812,15 @@ draw_debug_overlay :: proc() {
 
 		selected_piece_type_text: string
 		sp_has_moved: string
-		if selected_piece, selected_piece_ok := g.selected_piece.?; selected_piece_ok {
-			piece, is_piece := get_piece_by_position(g.board.tiles, selected_piece.position)
-			selected_piece_type_text = make_string_from_value(piece.type)
-			sp_has_moved = make_string_from_value(piece.has_moved)
-		} else {
-			selected_piece_type_text = "nil"
-			sp_has_moved = "nil"
+		if try_move_data, ok := g.board.turn_phase.(Try_Move); ok {
+			if selected_piece, selected_piece_ok := try_move_data.selected_piece.?; selected_piece_ok {
+				piece, is_piece := get_piece_by_position(g.board.tiles, selected_piece.position)
+				selected_piece_type_text = make_string_from_value(piece.type)
+				sp_has_moved = make_string_from_value(piece.has_moved)
+			} else {
+				selected_piece_type_text = "nil"
+				sp_has_moved = "nil"
+			}
 		}
 
 		arr3 := [?]string{
@@ -2946,6 +2935,7 @@ draw_help_modal :: proc() {
     //     fmt.ctprintf("Last Update: %d frames ago", stats.frames_since_sample), 
     //     panel_x + 40, perf_y + 20, 14, rl.GRAY)
     
+
     // Close instruction
 	close_text_x := panel_x + i32((panel_width - 200) / 2)
 	close_text_y := panel_y + panel_height - 40
@@ -2955,8 +2945,23 @@ draw_help_modal :: proc() {
 		g.show_help = false
 	}
 	// draw close button
-	if rl.GuiButton({f32(panel_x + panel_width - 22), f32(panel_y + 6), 15, 15}, "x") {
+	if rl.GuiButton({f32(panel_x + panel_width - 22), f32(panel_y + 3), 18, 18}, "x") {
 		pr("click close help modal")
 		g.show_help = false
 	}
+}
+
+init_test_captures :: proc() {
+	sa.push(&g.board.captures[.White],
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+	)
+	sa.push(&g.board.captures[.Black],
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+		Piece_Type.Pawn, Piece_Type.Pawn, Piece_Type.Pawn,
+	)
 }
