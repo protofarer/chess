@@ -3,10 +3,12 @@ package game
 import "core:log"
 import "core:fmt"
 import "core:strings"
+import "core:os"
 import rl "vendor:raylib"
 
 Resource_Load_Result :: enum {
     Success,
+	Load_Error,
     File_Not_Found,
     Invalid_Format,
     Memory_Error,
@@ -85,12 +87,17 @@ get_name_from_id :: proc {
 // Load a single texture with metadata tracking
 load_texture :: proc(rm: ^Resource_Manager, id: Texture_ID) -> Resource_Load_Result {
     filename := get_name_from_id(id)
-	filepath := fmt.ctprintf("%v%v.png", rm.base_texture_path, filename)
+	filepath := fmt.tprintf("%v%v.png", rm.base_texture_path, filename)
 
-    image := rl.LoadImage(filepath)
+	if !os.exists(filepath) {
+		return .File_Not_Found
+	}
+
+    image := rl.LoadImage(strings.clone_to_cstring(filepath))
     if image.data == nil {
-        return .File_Not_Found
+        return .Load_Error
     }
+
     // Apply transparency processing
     rl.ImageColorReplace(&image, rm.transparency_color, rl.BLANK)
     texture := rl.LoadTextureFromImage(image)
@@ -98,45 +105,51 @@ load_texture :: proc(rm: ^Resource_Manager, id: Texture_ID) -> Resource_Load_Res
         rl.UnloadImage(image)
         return .Memory_Error
     }
+
 	// rl.SetTextureFilter(texture, .BILINEAR )
+
     rm.textures[id] = texture
     rl.UnloadImage(image)
     return .Success
 }
 
-// TODO: check for file existence before LoadSound
 load_sound :: proc(rm: ^Resource_Manager, id: Sound_ID) -> Resource_Load_Result {
     filename := get_name_from_id(id)
-	filepath_wav := fmt.ctprintf("%v%v.wav", rm.base_sound_path, filename)
-    sound := rl.LoadSound(filepath_wav)
+	
+
+	filepath: string
+	if filepath_wav := fmt.tprintf("%v%v.wav", rm.base_sound_path, filename); os.exists(filepath_wav) {
+		filepath = filepath_wav
+	} else if filepath_mp3 := fmt.tprintf("%v%v.mp3", rm.base_sound_path, filename); os.exists(filepath_mp3) {
+		filepath = filepath_mp3
+	} else {
+		return .File_Not_Found
+	}
+
+    sound := rl.LoadSound(strings.clone_to_cstring(filepath))
     if sound.stream.buffer == nil {
-		filepath_mp3 := fmt.ctprintf("%v%v.mp3", rm.base_sound_path, filename)
-		sound = rl.LoadSound(filepath_mp3)
-		if sound.stream.buffer == nil {
-			return .File_Not_Found
-		}
+			return .Load_Error
     }
+
     rm.sounds[id] = sound
     return .Success
 }
 
 get_texture :: proc(id: Texture_ID) -> rl.Texture {
-    if g.resman == nil {
-        log.error("get_texture: resource_manager is nil")
-        return {}
-    }
     tex := g.resman.textures[id]
-    if tex == {} do log.error("Failed to get texture", id)
+    if tex == {} {
+		log.error("Failed to get texture", id)
+		g.app_state = .Exit
+	}
     return tex
 }
 
 get_sound :: proc(id: Sound_ID) -> rl.Sound {
-    if g.resman == nil {
-        log.error("get_sound: resource_manager is nil")
-        return {}
-    }
     sound := g.resman.sounds[id]
-    if sound == {} do log.error("Failed to get sound", id)
+    if sound == {} {
+		log.error("Failed to get sound", id)
+		g.app_state = .Exit
+	}
     return sound
 }
 
