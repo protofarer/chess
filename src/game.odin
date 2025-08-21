@@ -280,6 +280,8 @@ init :: proc() {
 
 	// In local play (same machine) Player White is always bot.
 	g.is_white_bottom = true
+
+	play_sfx(.New_Game)
 }
 
 eval_promotion :: proc(board: ^Board) -> bool {
@@ -305,6 +307,7 @@ update :: proc() {
 	update_audio_manager()
 	process_global_input()
 	if g.board.gameover {
+		// TODO: draw results, play sounds
 		return
 	}
 	// next_scene: Maybe(Scene) = nil
@@ -323,11 +326,13 @@ update :: proc() {
 			case .Toggle_Move_Overlay:
 				toggle_move_overlay()
 				log.debug("Toggled move overlay")
+				play_sfx(.Button_Click)
 				return
 
 			case .Toggle_Help:
 				toggle_help()
 				log.debug("Toggled help modal")
+				play_sfx(.Button_Click)
 				return
 
 			case .Left_Click_Board:
@@ -351,6 +356,7 @@ update :: proc() {
 						})
 						g.board.tile_pos_to_promote = nil
 
+						play_sfx(.Piece_Travel)
 						log.debug("Promoted pawn to", piece_type)
 						g.board.turn_phase = End{}
 					}
@@ -426,6 +432,7 @@ draw_ui :: proc() {
 		x: f32 = 5
 		if rl.GuiButton({x, y, BUTTON_WIDTH, BUTTON_HEIGHT}, "New Game") {
 			log.debug("Click New Game")
+			play_sfx(.Button_Click)
 			game_reset()
 		}
 		x += 75
@@ -433,11 +440,13 @@ draw_ui :: proc() {
 			log.debug("Click Draw")
 			g.draw_offered[g.current_player] = g.n_turns
 			g.turn_phase = End{}
+			play_sfx(.Button_Click)
 		}
 		x += 75
 		if rl.GuiButton({x,y,15,BUTTON_HEIGHT}, "#193#") {
 			log.debug("Click Help")
 			g.show_help = true
+			play_sfx(.Button_Click)
 		}
 
 		x += 70
@@ -448,8 +457,9 @@ draw_ui :: proc() {
 		rl.DrawText(fmt.ctprintf("Turn: %v", g.board.n_turns), i32(x), 7, 11, rl.WHITE)
 
 		if rl.GuiButton({465,y,BUTTON_WIDTH, BUTTON_HEIGHT}, "Exit") {
-			 log.debug("Click Exit")
-			 g.app_state = .Exit
+			log.debug("Click Exit")
+			play_sfx(.Button_Click)
+			g.app_state = .Exit
 		}
 
 
@@ -1051,6 +1061,7 @@ eval_board :: proc(board: ^Board) {
 			log.debug("Game Over: Checkmate")
 			board.is_checkmate = true
 			board.gameover = true
+			play_sfx(.Gameover_Win)
 		}
 	} else {
 		board.is_check = false
@@ -1064,6 +1075,7 @@ eval_board :: proc(board: ^Board) {
 		board.message = "Stalemate: No legal moves available for player"
 		board.is_draw = true
 		board.gameover = true
+		play_sfx(.Gameover_Draw)
 	}
 
 	// Mutual draw
@@ -1075,6 +1087,7 @@ eval_board :: proc(board: ^Board) {
 			board.message = "Draw: A tie was agreed to"
 			board.gameover = true
 			board.is_draw = true
+			play_sfx(.Gameover_Draw)
 		} else {
 			log.debug("Reset draw offers")
 			board.draw_offered[.Black] = 0
@@ -2884,12 +2897,12 @@ draw_help_modal :: proc() {
 	close_text_y := panel_y + panel_height - 40
     rl.DrawText("Press  ?  to close this window", close_text_x, close_text_y, 14, rl.LIGHTGRAY)
 	if rl.GuiButton({f32(close_text_x + 47), f32(close_text_y - 1),15,15}, "#193#") {
-		pr("click close help modal")
+		log.debug("Player click: close help modal")
 		g.show_help = false
 	}
 	// draw close button
 	if rl.GuiButton({f32(panel_x + panel_width - 22), f32(panel_y + 3), 18, 18}, "x") {
-		pr("click close help modal")
+		log.debug("Player click: close help modal")
 		g.show_help = false
 	}
 }
@@ -2926,8 +2939,8 @@ handle_board_click :: proc() {
 
 	// No piece selected and click on empty position or enemy piece, no move possible from this action
 	} else {
-		// TODO: empty / null action sound. Like hearthstone sound of clicking on non-actionable area aka empty part of play area
 		log.debug("No action")
+		play_sfx(.Empty)
 	}
 }
 
@@ -2949,7 +2962,7 @@ handle_friendly_piece_click :: proc(clicked_tile_position: Position, try_move_da
 
 deselect_piece :: proc() {
 	g.board.turn_phase = Try_Move{}
-	play_sfx(.Drop)
+	play_sfx(.Empty)
 }
 
 select_piece :: proc(clicked_tile_position: Position) {
@@ -2962,7 +2975,7 @@ select_piece :: proc(clicked_tile_position: Position) {
 	g.turn_phase = Try_Move{
 		selected_piece = new_selected_piece,
 	}
-	play_sfx(.Pickup)
+	play_sfx(.Piece_Select)
 }
 
 handle_move_attempt :: proc(clicked_tile_position: Position, try_move_data: Try_Move) {
@@ -2985,10 +2998,15 @@ handle_move_attempt :: proc(clicked_tile_position: Position, try_move_data: Try_
 	if proposed_move.piece_action != .None {
 		make_move(&g.board, proposed_move)
 		log.debug("Move, data:", proposed_move)
-		play_sfx(.Drop)
+		if proposed_move.piece_action == .Travel {
+			play_sfx(.Piece_Travel)
+		} else {
+			play_sfx(.Piece_Capture)
+		}
 
 		if promotion_available := eval_promotion(&g.board); promotion_available {
 				g.board.turn_phase = Choose_Promotion_Piece{}
+				play_sfx(.Piece_Promote)
 		} else {
 			g.board.turn_phase = End{}
 		}

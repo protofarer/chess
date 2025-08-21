@@ -115,13 +115,14 @@ load_texture :: proc(rm: ^Resource_Manager, id: Texture_ID) -> Resource_Load_Res
 
 load_sound :: proc(rm: ^Resource_Manager, id: Sound_ID) -> Resource_Load_Result {
     filename := get_name_from_id(id)
-	
 
 	filepath: string
-	if filepath_wav := fmt.tprintf("%v%v.wav", rm.base_sound_path, filename); os.exists(filepath_wav) {
-		filepath = filepath_wav
-	} else if filepath_mp3 := fmt.tprintf("%v%v.mp3", rm.base_sound_path, filename); os.exists(filepath_mp3) {
-		filepath = filepath_mp3
+	if wav := fmt.tprintf("%v%v.wav", rm.base_sound_path, filename); os.exists(wav) {
+		filepath = wav
+	} else if mp3 := fmt.tprintf("%v%v.mp3", rm.base_sound_path, filename); os.exists(mp3) {
+		filepath = mp3
+	} else if ogg := fmt.tprintf("%v%v.ogg", rm.base_sound_path, filename); os.exists(ogg) {
+		filepath = ogg
 	} else {
 		return .File_Not_Found
 	}

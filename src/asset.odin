@@ -10,6 +10,13 @@ Texture_ID :: enum {
 }
 
 Sound_ID :: enum {
-	Pickup,
-	Drop,
+	New_Game,
+	Empty,
+	Button_Click,
+	Gameover_Draw,
+	Gameover_Win,
+	Piece_Travel,
+	Piece_Capture,
+	Piece_Select,
+	Piece_Promote,
 }
