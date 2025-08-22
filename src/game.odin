@@ -258,8 +258,10 @@ init :: proc() {
 	// g.board = test_init_board_king_v_king_knight()
 	// g.board = test_init_board_king_bishop_v_king_bishop_same_color_bishop_black()
 	// g.board = test_init_board_king_bishop_v_king_bishop_same_color_bishop_white()
-	g.board = test_init_board_promotion_white()
+	// g.board = test_init_board_promotion_white()
 	// g.board = test_init_board_promotion_black()
+	// g.board = test_init_board_captures()
+	g.board = test_init_board_king_v_king_knight_extras_2()
 
 	// TEST CAPTURES
 	init_test_captures()
@@ -633,7 +635,7 @@ game_force_reload :: proc() -> bool {
 
 @(export)
 game_force_restart :: proc() -> bool {
-	return rl.IsKeyPressed(.R)
+	return rl.IsKeyPressed(.F6)
 }
 
 // In a web build, this is called when browser changes size. Remove the
@@ -885,9 +887,11 @@ eval_move :: proc(original_board: Board, proposed_move: Move_Data) -> (
 
 	threatened_positions := get_threatened_all_positions_for_player(proposed_board,
 																    proposed_board.current_player)
-	is_king_threatened := is_position_threatened(sa.slice(&threatened_positions),
-												 get_king_position(proposed_board.tiles, 
-												 proposed_board.current_player))
+	king_pos, king_exists := get_king_position(proposed_board.tiles, proposed_board.current_player)
+	if !king_exists {
+		return
+	}
+	is_king_threatened := is_position_threatened(sa.slice(&threatened_positions), king_pos)
 	if is_king_threatened {
 		if original_board.is_check {
 			return false, "Illegal move: must get your king out of check"
@@ -1051,9 +1055,10 @@ eval_board :: proc(board: ^Board) {
 
 	// Check and Checkmate
 
-	is_check := is_position_threatened(sa.slice(&board.threatened_positions),
-												 get_king_position(board.tiles, 
-												 board.current_player))
+	king_pos, king_exists := get_king_position(board.tiles, board.current_player)
+	if !king_exists do return
+
+	is_check := is_position_threatened(sa.slice(&board.threatened_positions), king_pos)
 	if is_check {
 		board.is_check = true
 
@@ -1190,6 +1195,7 @@ eval_board :: proc(board: ^Board) {
 	is_king_only[.White] = is_only_king_left(sa.slice(&pieces[.White]))
 	is_king_only[.Black] = is_only_king_left(sa.slice(&pieces[.Black]))
 
+
 	// Case King v King
 	is_king_v_king := is_king_only[.White] && is_king_only[.Black]
 	if is_king_v_king {
@@ -1227,18 +1233,13 @@ eval_board :: proc(board: ^Board) {
 	black_king_knight_map[.Knight] = 1
 	is_black_king_knight_only := is_only_pieces_left_from_pieces_slice(sa.slice(&pieces[.Black]), black_king_knight_map)
 
-	if is_white_king_knight_only || is_black_king_knight_only {
+	if (is_white_king_knight_only && is_king_only[.Black]) || (is_black_king_knight_only && is_king_only[.White]) {
 		board.is_dead_position = true
 		board.dead_position_message = "King versus King & Knight is a dead position. Consider a draw."
 	}
 
-
+	// for both players: is 2 pieces left, one is king other is bishop, both bishops of same color
 	is_king_bishop_v_king_bishop_same_color := false
-	// for both players:
-	// is 2 pieces left
-	// one is king other is bishop
-
-	// are both bishops same color? (get color of tile!)
 
 	white_king_bishop_map: Piece_Type_Counts
 	white_king_bishop_map[.King] = 1
@@ -1272,7 +1273,6 @@ eval_board :: proc(board: ^Board) {
 		board.is_dead_position = true
 		board.dead_position_message = "King & Bishop versus King & Bishop where bishops are same tile color is a dead position. Consider a draw."
 	}
-
 
 	// TODO: refactor propose_move (and others?) so that state is set here and the other fns simple read the state, eg see how castling is done here.
 
@@ -1463,9 +1463,10 @@ get_king_legal_moves :: proc(
 ) -> (
 	legal_moves: Move_Results
 ) {
-	blind_moves := get_moves_for_position(board, 
-							 get_king_position(board.tiles, player_color), 
-							 player_color)
+	king_pos, king_exists := get_king_position(board.tiles, player_color)
+	if !king_exists do return
+
+	blind_moves := get_moves_for_position(board, king_pos, player_color)
 	threatened_positions := board.threatened_positions
 	for blind_move in sa.slice(&blind_moves) {
 		for p in sa.slice(&threatened_positions) {
@@ -1479,9 +1480,10 @@ get_king_legal_moves :: proc(
 }
 
 can_king_move :: proc(board: Board, player_color: Player_Color) -> bool {
-	blind_moves := get_moves_for_position(board, 
-								   get_king_position(board.tiles, player_color), 
-								   player_color)
+	king_pos, king_exists := get_king_position(board.tiles, player_color)
+	if !king_exists do return false
+
+	blind_moves := get_moves_for_position(board, king_pos, player_color)
 	threatened_positions := board.threatened_positions
 	for blind_move in sa.slice(&blind_moves) {
 		is_move_threatened := false
@@ -1509,12 +1511,12 @@ is_position_threatened :: proc(threatened_positions: []Position, tile_pos: Posit
 	return false
 }
 
-get_king_position :: proc(tiles: Tiles, player_color: Player_Color) -> Position {
+get_king_position :: proc(tiles: Tiles, player_color: Player_Color) -> (pos: Position, exists: bool) {
 	for row, y in tiles {
 		for tile, x in row {
 			piece, is_piece := tile.(Piece)
 			if is_piece && piece.type == .King && piece.color == player_color {
-				return Position{i32(x),i32(y)}
+				return Position{i32(x),i32(y)}, true
 			}
 		}
 	}
@@ -1524,8 +1526,7 @@ get_king_position :: proc(tiles: Tiles, player_color: Player_Color) -> Position 
 	when ODIN_DEBUG {
 		panic("Invalid chess state: missing king")
 	} else {
-		g.app_state = .Exit
-		return {}
+		return {}, false
 	}
 }
 
@@ -2338,6 +2339,22 @@ test_init_white_checkmated_board :: proc() -> Board {
 	return make_board_from_tiles(tiles)
 }
 
+test_init_board_captures :: proc() -> Board {
+	piece_types := [BOARD_LENGTH][BOARD_LENGTH]Piece_Type{
+		{.None,.None,.None,.None,.King,.None, .Rook,.None}, 
+		{.None,.None,.None,.None,.None,.Pawn, .None,.None}, 
+		{.None,.Bishop,.None,.None,.Pawn,.None, .None,.None}, 
+		{.None,.None,.None,.Pawn,.None,.Knight, .None,.None}, 
+
+		{.None,.None,.Pawn,.None,.None,.None, .None,.Knight}, 
+		{.None,.Pawn,.None,.None,.Bishop,.None, .None,.None}, 
+		{.Pawn,.None,.None,.None,.None,.None, .None,.None}, 
+		{.None,.None,.None,.None,.King,.None, .Rook,.None}, 
+	}
+	tiles := make_tiles_with_piece_types(piece_types)
+	return make_board_from_tiles(tiles)
+}
+
 test_init_board_sparse :: proc() -> Board {
 	piece_types := [BOARD_LENGTH][BOARD_LENGTH]Piece_Type{
 		{.None,.None,.None,.None,.King,.None, .None,.None}, 
@@ -2449,6 +2466,28 @@ test_init_board_king_v_king_knight :: proc() -> Board {
 	piece_types[0][4] = .King
 	piece_types[0][6] = .Knight
 	piece_types[7][4] = .King
+	tiles := make_tiles_with_piece_types(piece_types)
+	return make_board_from_tiles(tiles)
+}
+
+test_init_board_king_v_king_knight_extras_1 :: proc() -> Board {
+	piece_types := BLANK_TILES
+	piece_types[0][4] = .King
+	piece_types[0][6] = .Knight
+	piece_types[0][0] = .Rook
+
+	piece_types[7][4] = .King
+	tiles := make_tiles_with_piece_types(piece_types)
+	return make_board_from_tiles(tiles)
+}
+
+test_init_board_king_v_king_knight_extras_2 :: proc() -> Board {
+	piece_types := BLANK_TILES
+	piece_types[0][4] = .King
+	piece_types[0][6] = .Knight
+
+	piece_types[7][4] = .King
+	piece_types[7][0] = .Rook
 	tiles := make_tiles_with_piece_types(piece_types)
 	return make_board_from_tiles(tiles)
 }
@@ -2638,7 +2677,9 @@ draw_selected_piece_move_overlay :: proc(selected_piece: ^Selected_Piece_Data) {
 
 draw_check_overlay :: proc(tiles: Tiles, player: Player_Color) {
 	// Highlight king in check or checkmate
-	king_pos := get_king_position(g.board.tiles, g.current_player)
+	king_pos, king_exists := get_king_position(g.board.tiles, g.current_player)
+	if !king_exists do return
+
 	draw_tile_border(king_pos, rl.RED)
 }
 

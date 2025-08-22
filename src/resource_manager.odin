@@ -119,6 +119,8 @@ load_sound :: proc(rm: ^Resource_Manager, id: Sound_ID) -> Resource_Load_Result 
 	filepath: string
 	if wav := fmt.tprintf("%v%v.wav", rm.base_sound_path, filename); os.exists(wav) {
 		filepath = wav
+	} else if cap_wav := fmt.tprintf("%v%v.WAV", rm.base_sound_path, filename); os.exists(cap_wav) {
+		filepath = cap_wav
 	} else if mp3 := fmt.tprintf("%v%v.mp3", rm.base_sound_path, filename); os.exists(mp3) {
 		filepath = mp3
 	} else if ogg := fmt.tprintf("%v%v.ogg", rm.base_sound_path, filename); os.exists(ogg) {
@@ -140,7 +142,6 @@ get_texture :: proc(id: Texture_ID) -> rl.Texture {
     tex := g.resman.textures[id]
     if tex == {} {
 		log.error("Failed to get texture", id)
-		g.app_state = .Exit
 	}
     return tex
 }
@@ -149,7 +150,6 @@ get_sound :: proc(id: Sound_ID) -> rl.Sound {
     sound := g.resman.sounds[id]
     if sound == {} {
 		log.error("Failed to get sound", id)
-		g.app_state = .Exit
 	}
     return sound
 }
