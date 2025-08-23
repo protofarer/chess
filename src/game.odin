@@ -265,8 +265,10 @@ init :: proc() {
 	// init_test_captures()
 
 	 // name == "America/New York"
-	if local_timezone, ok_timezone := timezone.region_load("local"); ok_timezone {
+	// TODO: doesn't work for web build, local_timezone nil despite ok
+	if local_timezone, ok_timezone := timezone.region_load("local"); ok_timezone && local_timezone != nil {
 		g.time.local_timezone = local_timezone
+		log.info("Successfully loaded local timezone region:", local_timezone)
 	} else {
 		log.warn("Failed to load local region for timezone")
 	}
@@ -2716,51 +2718,62 @@ draw_help_modal :: proc() {
     title_width := rl.MeasureText(fmt.ctprint(title), title_font_size)
     rl.DrawText(fmt.ctprint(title), panel_x + i32((panel_width - title_width) / 2), panel_y + 20, title_font_size, rl.WHITE)
     
-    // Draw stats in columns
-    col1_x := panel_x + 30
-    col2_x := panel_x + 160
-    y_start := panel_y + 60
-    
+	// Draw stats in columns
+	col1_x := panel_x + 20
+	col2_x := panel_x + 170
+	y_start := panel_y + 60
+
 	header_font_size: i32 = 14
-    // Column 1: Option keys
-    y := y_start
+	// Column 1: Option keys
+	y := y_start
     rl.DrawText("Options", col1_x, y, header_font_size, rl.LIGHTGRAY)
 
-    y += 25
-    rl.DrawText("? : Toggle Help", col1_x, y, 8, rl.WHITE)
+	y += 25
+	rl.DrawText("? : Toggle Help", col1_x, y, 8, rl.WHITE)
+
 	y += 15
-    rl.DrawText("M : Show Move Overlay", col1_x, y, 8, rl.WHITE)
+	is_move_overlay_on: string = g.show_move_overlay ? "On" : "Off"
+	move_overlay_cstr := fmt.ctprintf("M   : Show Move Overlay %v", is_move_overlay_on)
+	rl.DrawText(move_overlay_cstr, col1_x, y, 8, rl.WHITE)
+	if rl.GuiButton({f32(col1_x), f32(y -3),15,BUTTON_HEIGHT}, "M") {
+		log.debug("Click Toggle Move Overlay from help modal")
+		g.show_move_overlay = !g.show_move_overlay
+		play_sfx(.Button_Click)
+	}
+
 	y += 15
-    rl.DrawText("Esc : Exit Program", col1_x, y, 8, rl.WHITE)
+   rl.DrawText("Esc : Exit Program", col1_x, y, 8, rl.WHITE)
 
 	// Column 2: Time
 	y = y_start
-    rl.DrawText("Times", col2_x, y, header_font_size, rl.LIGHTGRAY)
+	   rl.DrawText("Times", col2_x, y, header_font_size, rl.LIGHTGRAY)
 
 	y += 25
 	game_start_string := make_datetime_display_string(g.time.game_start_datetime)
 	game_start_display := fmt.ctprintf("Game start: %v", game_start_string)
-    rl.DrawText(game_start_display , col2_x, y, 8, rl.WHITE)
+   rl.DrawText(game_start_display , col2_x, y, 8, rl.WHITE)
 	y += 15
 	game_duration_string := make_duration_display_string(g.time.game_duration)
 	game_duration_display := fmt.ctprintf("Game duration: %v", game_duration_string)
-    rl.DrawText(game_duration_display , col2_x, y, 8, rl.WHITE)
+   rl.DrawText(game_duration_display , col2_x, y, 8, rl.WHITE)
 	y += 15
-	timezone_string := g.time.local_timezone.name
-	timezone_display := fmt.ctprintf("Timezone: %v", timezone_string)
-    rl.DrawText(timezone_display , col2_x, y, 8, rl.WHITE)
-	y += 20
+	if g.time.local_timezone != nil {
+		timezone_string := g.time.local_timezone.name
+		timezone_display := fmt.ctprintf("Timezone: %v", timezone_string)
+		  rl.DrawText(timezone_display , col2_x, y, 8, rl.WHITE)
+		y += 20
+	}
 	turn_duration_string := make_duration_display_string(g.time.turn_duration)
 	turn_duration_display := fmt.ctprintf("Current turn: %v", turn_duration_string)
-    rl.DrawText(turn_duration_display , col2_x, y, 8, rl.WHITE)
+	   rl.DrawText(turn_duration_display , col2_x, y, 8, rl.WHITE)
 	y += 15
 	white_turn_duration_string := make_duration_display_string(g.time.players_duration[.White])
 	white_turn_duration_display := fmt.ctprintf("White total duration: %v", white_turn_duration_string)
-    rl.DrawText(white_turn_duration_display , col2_x, y, 8, rl.WHITE)
+	   rl.DrawText(white_turn_duration_display , col2_x, y, 8, rl.WHITE)
 	y += 15
 	black_turn_duration_string := make_duration_display_string(g.time.players_duration[.Black])
 	black_turn_duration_display := fmt.ctprintf("Black total duration: %v", black_turn_duration_string)
-    rl.DrawText(black_turn_duration_display , col2_x, y, 8, rl.WHITE)
+	   rl.DrawText(black_turn_duration_display , col2_x, y, 8, rl.WHITE)
 
     // Performance info at bottom
     // perf_y := panel_y + panel_height - 80
@@ -2783,7 +2796,7 @@ draw_help_modal :: proc() {
     rl.DrawText("Press  ?  to close this window", close_text_x, close_text_y, 14, rl.LIGHTGRAY)
 	if rl.GuiButton({f32(close_text_x + 47), f32(close_text_y - 1),15,15}, "#193#") {
 		log.debug("Player click: close help modal")
-		g.show_help = false
+		g.show_help = !g.show_help
 	}
 	// draw close button
 	if rl.GuiButton({f32(panel_x + panel_width - 22), f32(panel_y + 3), 18, 18}, "x") {
@@ -2917,6 +2930,9 @@ eval_promotion :: proc(board: ^Board) -> bool {
 	return false
 }
 
+BUTTON_WIDTH :: 70
+BUTTON_HEIGHT :: 15
+
 draw_ui :: proc() {
 	// NB: text size min is 10, steps to 11, 12
 	// Top Status Bar
@@ -2924,8 +2940,6 @@ draw_ui :: proc() {
 		topbar_width: f32 = LOGICAL_SCREEN_WIDTH
 		topbar_height: f32 = TOPBAR_HEIGHT
 		rl.GuiStatusBar({0,0,topbar_width, topbar_height}, "")
-		BUTTON_WIDTH :: 70
-		BUTTON_HEIGHT :: 15
 		y: f32 = 4
 		x: f32 = 5
 		if rl.GuiButton({x, y, BUTTON_WIDTH, BUTTON_HEIGHT}, "New Game") {
