@@ -3,7 +3,6 @@ package game
 import "core:log"
 import "core:fmt"
 import "core:strings"
-import "core:os"
 import rl "vendor:raylib"
 
 Resource_Load_Result :: enum {
@@ -54,7 +53,7 @@ load_all_textures :: proc(rm: ^Resource_Manager) -> bool {
         if result != .Success {
             log.errorf("Failed to load texture %v: %v", id, result)
             success = false
-        } 
+        }
     }
     return success
 }
@@ -89,9 +88,10 @@ load_texture :: proc(rm: ^Resource_Manager, id: Texture_ID) -> Resource_Load_Res
     filename := get_name_from_id(id)
 	filepath := fmt.tprintf("%v%v.png", rm.base_texture_path, filename)
 
-	if !os.exists(filepath) {
-		return .File_Not_Found
-	}
+	// TODO: tmp for web build, core:os procedure not supported on JS target
+	// if !os.exists(filepath) {
+	// 	return .File_Not_Found
+	// }
 
     image := rl.LoadImage(strings.clone_to_cstring(filepath))
     if image.data == nil {
@@ -116,22 +116,37 @@ load_texture :: proc(rm: ^Resource_Manager, id: Texture_ID) -> Resource_Load_Res
 load_sound :: proc(rm: ^Resource_Manager, id: Sound_ID) -> Resource_Load_Result {
     filename := get_name_from_id(id)
 
-	filepath: string
-	if wav := fmt.tprintf("%v%v.wav", rm.base_sound_path, filename); os.exists(wav) {
-		filepath = wav
-	} else if cap_wav := fmt.tprintf("%v%v.WAV", rm.base_sound_path, filename); os.exists(cap_wav) {
-		filepath = cap_wav
-	} else if mp3 := fmt.tprintf("%v%v.mp3", rm.base_sound_path, filename); os.exists(mp3) {
-		filepath = mp3
-	} else if ogg := fmt.tprintf("%v%v.ogg", rm.base_sound_path, filename); os.exists(ogg) {
-		filepath = ogg
-	} else {
-		return .File_Not_Found
-	}
+	// TODO: tmp for web build, core:os procedure not supported on JS target. #load?
+	// filepath: string
+	// if wav := fmt.tprintf("%v%v.wav", rm.base_sound_path, filename); os.exists(wav) {
+	// 	filepath = wav
+	// } else if cap_wav := fmt.tprintf("%v%v.WAV", rm.base_sound_path, filename); os.exists(cap_wav) {
+	// 	filepath = cap_wav
+	// } else if mp3 := fmt.tprintf("%v%v.mp3", rm.base_sound_path, filename); os.exists(mp3) {
+	// 	filepath = mp3
+	// } else if ogg := fmt.tprintf("%v%v.ogg", rm.base_sound_path, filename); os.exists(ogg) {
+	// 	filepath = ogg
+	// } else {
+	// 	return .File_Not_Found
+	// }
 
-    sound := rl.LoadSound(strings.clone_to_cstring(filepath))
+
+	wav := fmt.ctprintf("%v%v.wav", rm.base_sound_path, filename)
+    sound := rl.LoadSound(wav)
     if sound.stream.buffer == nil {
-			return .Load_Error
+		cap_wav := fmt.ctprintf("%v%v.WAV", rm.base_sound_path, filename)
+		sound = rl.LoadSound(cap_wav)
+		if sound.stream.buffer == nil {
+			mp3 := fmt.ctprintf("%v%v.mp3", rm.base_sound_path, filename)
+			sound = rl.LoadSound(mp3)
+			if sound.stream.buffer == nil {
+				ogg := fmt.ctprintf("%v%v.ogg", rm.base_sound_path, filename)
+				sound = rl.LoadSound(ogg)
+				if sound.stream.buffer == nil {
+					return .Load_Error
+				}
+			}
+		}
     }
 
     rm.sounds[id] = sound

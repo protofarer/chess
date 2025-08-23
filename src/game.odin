@@ -2,13 +2,11 @@ package game
 
 import "core:fmt"
 import "core:log"
-import "core:math/linalg"
-import "core:math"
 import "core:time"
+import "core:math"
 import "core:time/datetime"
 import "core:time/timezone"
 import "core:strings"
-import "core:os"
 import sa "core:container/small_array"
 
 import rl "vendor:raylib"
@@ -26,7 +24,7 @@ LOGICAL_SCREEN_HEIGHT :: 360
 LOGICAL_SCREEN_WIDTH :: 540
 RENDER_TEXTURE_SCALE :: 2
 
-WINDOW_TITLE :: "Odin Gamejam Template"
+WINDOW_TITLE :: "Chess"
 WINDOW_W :: 1600
 WINDOW_H :: 900
 TICK_RATE :: 60
@@ -50,7 +48,7 @@ Game_Memory :: struct {
 	is_music_enabled: bool,
 	using board: Board,
 	time: Game_Time,
-	promotion_piece_data: [4]Promotion_Piece_Data
+	promotion_piece_data: [4]Promotion_Piece_Data,
 }
 
 Game_Time :: struct {
@@ -109,7 +107,7 @@ Tiles :: [BOARD_LENGTH][BOARD_LENGTH]Tile
 
 App_State :: enum {
 	Running,
-	Exit
+	Exit,
 }
 
 Scene :: union {
@@ -137,7 +135,7 @@ Piece_Type :: enum {
 
 Tile :: union {
 	Piece,
-	Empty_Tile
+	Empty_Tile,
 }
 
 Piece :: struct {
@@ -205,11 +203,13 @@ setup :: proc() -> bool {
 	load_all_assets(&resman)
 
 	gui_style_file := "assets/style_amber.rgs"
-	if os.exists(gui_style_file) {
+
+	// TODO: tmp for web build, core:os procedure not supported on JS target
+	// if os.exists(gui_style_file) {
 		rl.GuiLoadStyle(strings.clone_to_cstring(gui_style_file))
-	} else {
-		log.warn("Failed to load GUI style file, using default style")
-	}
+	// } else {
+	// 	log.warn("Failed to load GUI style file, using default style")
+	// }
 
 	rl.SetMouseCursor(.POINTING_HAND)
 	update_mouse_transform()
@@ -218,7 +218,7 @@ setup :: proc() -> bool {
 		resman = resman,
 		render_texture = rl.LoadRenderTexture(
 			LOGICAL_SCREEN_WIDTH * RENDER_TEXTURE_SCALE, 
-			LOGICAL_SCREEN_HEIGHT * RENDER_TEXTURE_SCALE
+			LOGICAL_SCREEN_HEIGHT * RENDER_TEXTURE_SCALE,
 		),
 		audman = audman,
 	}
@@ -241,7 +241,6 @@ init :: proc() {
 	g.is_music_enabled = true
 	g.board = init_board()
 
-	// TEST BOARDS
 	// g.board = test_init_white_checked_board()
 	// g.board = test_init_black_checked_board()
 	// g.board = test_init_trapped_king_board()
@@ -261,10 +260,9 @@ init :: proc() {
 	// g.board = test_init_board_promotion_white()
 	// g.board = test_init_board_promotion_black()
 	// g.board = test_init_board_captures()
-	g.board = test_init_board_king_v_king_knight_extras_2()
+	// g.board = test_init_board_king_v_king_knight_extras_2()
 
-	// TEST CAPTURES
-	init_test_captures()
+	// init_test_captures()
 
 	 // name == "America/New York"
 	if local_timezone, ok_timezone := timezone.region_load("local"); ok_timezone {
@@ -286,22 +284,6 @@ init :: proc() {
 	play_sfx(.New_Game)
 }
 
-eval_promotion :: proc(board: ^Board) -> bool {
-	// if pawn in promotion row -> Post_Move
-	// check promotion row for pawns. Can only be 1 pawn to promote, logically.
-	promotion_row_index := g.current_player == .White ?  BOARD_LENGTH - 1 : 0
-	for tile, x in g.board.tiles[promotion_row_index] {
-		piece, is_piece := tile.(Piece)
-		if is_piece && piece.type == .Pawn && piece.color == g.current_player {
-			g.board.tile_pos_to_promote = Position{i32(x),i32(promotion_row_index)}
-		}
-	}
-	if pos, ok := g.tile_pos_to_promote.(Position); ok {
-		return true
-	} 
-	return false
-}
-
 update :: proc() {
 	if rl.IsWindowResized() {
 		update_mouse_transform()
@@ -309,7 +291,7 @@ update :: proc() {
 	update_audio_manager()
 	process_global_input()
 	if g.board.gameover {
-		// TODO: draw results, play sounds
+		// TODO: draw results, play sounds. Use scene and state instead of flag!
 		return
 	}
 	// next_scene: Maybe(Scene) = nil
@@ -346,7 +328,7 @@ update :: proc() {
 		case Choose_Promotion_Piece:
 			if pos_to_promote, ok_pos := g.board.tile_pos_to_promote.(Position); ok_pos {
 				is_left_mouse_clicked := rl.IsMouseButtonPressed(.LEFT)
-				for data, i in g.promotion_piece_data {
+				for data in g.promotion_piece_data {
 					if is_left_mouse_clicked && is_mouse_over_rect(data.rect.x, data.rect.y, data.rect.width, data.rect.height) {
 						piece_type := data.piece_type
 						piece_color := g.current_player
@@ -354,7 +336,7 @@ update :: proc() {
 						set_tile(&g.board.tiles, pos_to_promote, Piece{
 							type = piece_type, 
 							color = piece_color, 
-							has_moved = true
+							has_moved = true,
 						})
 						g.board.tile_pos_to_promote = nil
 
@@ -407,10 +389,7 @@ draw :: proc() {
 		}
 	}
 
-
-	// rl.BeginMode2D(ui_camera())
-		draw_ui()
-	// rl.EndMode2D()
+	draw_ui()
 
 	end_letterbox_rendering()
 
@@ -419,139 +398,6 @@ draw :: proc() {
 	}
 
 	rl.EndDrawing()
-}
-
-draw_ui :: proc() {
-	// NB: text size min is 10, steps to 11, 12
-	// Top Status Bar
-	{
-		topbar_width: f32 = LOGICAL_SCREEN_WIDTH
-		topbar_height: f32 = TOPBAR_HEIGHT
-		rl.GuiStatusBar({0,0,topbar_width, topbar_height}, "")
-		BUTTON_WIDTH :: 70
-		BUTTON_HEIGHT :: 15
-		y: f32 = 4
-		x: f32 = 5
-		if rl.GuiButton({x, y, BUTTON_WIDTH, BUTTON_HEIGHT}, "New Game") {
-			log.debug("Click New Game")
-			play_sfx(.Button_Click)
-			game_reset()
-		}
-		x += 75
-		if rl.GuiButton({x,y,BUTTON_WIDTH, BUTTON_HEIGHT}, "Draw") {
-			log.debug("Click Draw")
-			g.draw_offered[g.current_player] = g.n_turns
-			g.turn_phase = End{}
-			play_sfx(.Button_Click)
-		}
-		x += 75
-		if rl.GuiButton({x,y,15,BUTTON_HEIGHT}, "#193#") {
-			log.debug("Click Help")
-			g.show_help = true
-			play_sfx(.Button_Click)
-		}
-
-		x += 70
-		rl.GuiDrawIcon(.ICON_CLOCK, i32(x-20),i32(y-2),1,rl.WHITE)
-
-		rl.DrawText(make_duration_display_string(get_game_duration()), i32(x), 7, 11, rl.WHITE)
-		x += 80
-		rl.DrawText(fmt.ctprintf("Turn: %v", g.board.n_turns), i32(x), 7, 11, rl.WHITE)
-
-		if rl.GuiButton({465,y,BUTTON_WIDTH, BUTTON_HEIGHT}, "Exit") {
-			log.debug("Click Exit")
-			play_sfx(.Button_Click)
-			g.app_state = .Exit
-		}
-
-
-		// centering logic
-		// title_width := rl.MeasureText(fmt.ctprint(title), 32)
-		// rl.DrawText(fmt.ctprint(title), panel_x + i32((panel_width - title_width) / 2), panel_y + 20, 32, rl.YELLOW)
-		topbar_message := fmt.ctprintf("%v %v", g.message, g.dead_position_message)
-		topbar_message_width := rl.MeasureText(topbar_message, 8)
-		rl.DrawText(topbar_message, i32((i32(topbar_width) - topbar_message_width)/2), 27, 8, rl.RED)
-	}
-
-	draw_player_panel :: proc(panel_bounds: Rec, player_color: Player_Color, current_player: Player_Color, title: string, player_total_duration: time.Duration, turn_duration: time.Duration, captures: []Piece_Type, is_check: bool) {
-		ygap :: 22
-		PANEL_BORDER_THICKNESS :: 2
-		is_current_player := player_color == current_player
-
-		rl.GuiPanel(panel_bounds, nil)
-		if is_current_player {
-			rl.DrawRectangleLinesEx(panel_bounds, PANEL_BORDER_THICKNESS, rl.GREEN)
-		} else {
-			rl.DrawRectangleLinesEx(panel_bounds, PANEL_BORDER_THICKNESS, rl.LIGHTGRAY)
-		}
-		x0 := panel_bounds.x
-		y0 := panel_bounds.y
-
-		x := x0 + 5
-		y := y0 + 5
-		rl.GuiLabel({x, y, panel_bounds.width, 10}, strings.clone_to_cstring(title))
-
-		y += 15
-		cstr_player_duration := make_duration_display_string(player_total_duration)
-		rl.GuiLabel({x, y, 100, 10}, cstr_player_duration)
-
-		if is_current_player {
-			y += 15
-			cstr_turn_duration := make_duration_display_string(turn_duration)
-			cstr_player_turn_duration_text := fmt.ctprintf("+%v", cstr_turn_duration)
-			rl.GuiLabel({x, y, 100, 10}, cstr_player_turn_duration_text)
-
-			if g.is_check {
-				y += 15
-				rl.DrawText("CHECK", i32(x + 50), i32(y0 + 5), 10, rl.RED)
-			}
-		}
-
-		// Draw captured pieces from bottom up
-		xcap :i32= i32(x0 + 10)
-		ycap :i32= i32(panel_bounds.y + panel_bounds.height) - 30 * 9
-		for piece_type,i in captures {
-			if i % 8 == 0 && i > 0 {
-				 xcap += 40
-				 ycap -= 8 * ygap
-			}
-			ycap += ygap
-			draw_piece_sprite({xcap, ycap}, 0.8, piece_type, get_other_player_color(player_color))
-		}
-	}
-
-	// White Panel (Left)
-	turn_duration := get_turn_duration()
-	white_panel_bounds := LEFT_PANEL_BOUNDS
-	white_total_duration := get_player_duration(.White)
-	draw_player_panel(white_panel_bounds, .White, g.current_player, "White", white_total_duration, turn_duration, sa.slice(&g.board.captures[.White]), g.is_check)
-
-	// Black Panel (Right)
-	black_panel_bounds := RIGHT_PANEL_BOUNDS
-	black_total_duration := get_player_duration(.Black)
-	draw_player_panel(black_panel_bounds, .Black, g.current_player, "Black", black_total_duration, turn_duration, sa.slice(&g.board.captures[.Black]), g.is_check)
-
-	if _, ok := g.turn_phase.(Choose_Promotion_Piece); ok {
-		draw_promotion_piece_frame()
-	}
-
-	if g.show_help {
-		draw_help_modal()
-	}
-
-	// Draw Checkmate / Gameover state
-	if g.gameover {
-		if g.is_checkmate {
-			winner := get_other_player_color(g.current_player)
-			t := fmt.ctprintf("Checkmate! %v wins!", winner)
-			rl.DrawText(t,140,180, 24, rl.RED)
-		} else if g.is_draw {
-			t := fmt.ctprintf("- Draw -")
-			rl.DrawText(t, 250,180, 24, rl.RED)
-
-		}
-
-	}
 }
 
 @(export)
@@ -566,7 +412,7 @@ game_init_window :: proc() {
 	rl.SetConfigFlags({.WINDOW_RESIZABLE, .VSYNC_HINT})
 	rl.InitWindow(WINDOW_W, WINDOW_H, WINDOW_TITLE)
 	rl.SetWindowPosition(10, 125)
-	rl.SetTargetFPS(TICK_RATE )
+	rl.SetTargetFPS(TICK_RATE)
 	rl.SetExitKey(nil)
 }
 
@@ -702,13 +548,6 @@ Play_Action :: enum {
 	Toggle_Help,
 }
 
-is_mouse_over_board :: proc() -> bool {
-	return is_mouse_over_rect(BOARD_BOUNDS.x, 
-							  BOARD_BOUNDS.y, 
-							  BOARD_BOUNDS.width, 
-							  BOARD_BOUNDS.height)
-}
-
 process_play_input :: proc(s: ^Play_Scene) -> Play_Action {
 	if is_mouse_over_board() && rl.IsMouseButtonPressed(.LEFT) {
 		return .Left_Click_Board
@@ -728,6 +567,13 @@ toggle_help :: proc() {
 
 toggle_move_overlay :: proc() {
 	g.board.show_move_overlay = !g.board.show_move_overlay
+}
+
+is_mouse_over_board :: proc() -> bool {
+	return is_mouse_over_rect(BOARD_BOUNDS.x, 
+							  BOARD_BOUNDS.y, 
+							  BOARD_BOUNDS.width, 
+							  BOARD_BOUNDS.height)
 }
 
 draw_sprite :: proc(
@@ -880,7 +726,7 @@ get_message_for_illegal_move :: proc(board: Board, proposed_move: Move_Data) -> 
 
 // test for legality, if illegal emit message, else approve move
 eval_move :: proc(original_board: Board, proposed_move: Move_Data) -> (
-	is_legal: bool, message: string
+	is_legal: bool, message: string,
 ) {
 	proposed_board := original_board
 	make_move(&proposed_board, proposed_move)
@@ -1060,13 +906,15 @@ eval_board :: proc(board: ^Board) {
 
 	is_check := is_position_threatened(sa.slice(&board.threatened_positions), king_pos)
 	if is_check {
-		board.is_check = true
-
 		if sa.len(board.legal_moves) == 0 {
 			log.debug("Game Over: Checkmate")
 			board.is_checkmate = true
 			board.gameover = true
 			play_sfx(.Gameover_Win)
+		} else {
+			log.debug("Board state: Check")
+			board.is_check = true
+			play_sfx(.Check)
 		}
 	} else {
 		board.is_check = false
@@ -1210,7 +1058,7 @@ eval_board :: proc(board: ^Board) {
 		other_pc := get_other_player_color(pc)
 		is_king_only_pc := is_king_only[pc]
 		is_other_king_bishop := is_only_king_bishop_left(sa.slice(&pieces[other_pc]))
-		if is_king_only_pc && is_only_king_bishop_left(sa.slice(&pieces[other_pc])) {
+		if is_king_only_pc && is_other_king_bishop {
 			is_king_bishop_v_king[pc] = true
 		}
 	}
@@ -1227,13 +1075,15 @@ eval_board :: proc(board: ^Board) {
 	white_king_knight_map[.King] = 1
 	white_king_knight_map[.Knight] = 1
 	is_white_king_knight_only := is_only_pieces_left_from_pieces_slice(sa.slice(&pieces[.White]), white_king_knight_map)
+	is_king_knight_v_king[.White] = (is_white_king_knight_only && is_king_only[.Black])
 
 	black_king_knight_map: Piece_Type_Counts
 	black_king_knight_map[.King] = 1
 	black_king_knight_map[.Knight] = 1
 	is_black_king_knight_only := is_only_pieces_left_from_pieces_slice(sa.slice(&pieces[.Black]), black_king_knight_map)
+	is_king_knight_v_king[.Black] = (is_black_king_knight_only && is_king_only[.White])
 
-	if (is_white_king_knight_only && is_king_only[.Black]) || (is_black_king_knight_only && is_king_only[.White]) {
+	if is_king_knight_v_king[.Black] || is_king_knight_v_king[.White] {
 		board.is_dead_position = true
 		board.dead_position_message = "King versus King & Knight is a dead position. Consider a draw."
 	}
@@ -1269,7 +1119,8 @@ eval_board :: proc(board: ^Board) {
 		}
 	}
 
-	if is_white_king_bishop_only && is_black_king_bishop_only && white_bishop_tile_color == black_bishop_tile_color {
+	is_king_bishop_v_king_bishop_same_color = is_white_king_bishop_only && is_black_king_bishop_only && white_bishop_tile_color == black_bishop_tile_color
+	if is_king_bishop_v_king_bishop_same_color {
 		board.is_dead_position = true
 		board.dead_position_message = "King & Bishop versus King & Bishop where bishops are same tile color is a dead position. Consider a draw."
 	}
@@ -1426,9 +1277,9 @@ is_castle_available :: proc(
 
 get_moves_for_player :: proc(
 	board: Board, 
-	player_color: Player_Color
+	player_color: Player_Color,
 ) -> (
-	player_moves: Move_Results
+	player_moves: Move_Results,
 ) {
 	piece_positions := get_piece_positions_by_player(board.tiles, player_color)
 	for piece_position in sa.slice(&piece_positions) {
@@ -1444,12 +1295,12 @@ get_legal_moves :: proc(
 	original_board: Board,
 	player_color: Player_Color, 
 	threatened_positions: []Position, 
-	player_moves: []Move_Data
+	player_moves: []Move_Data,
 ) -> (
-	legal_moves: Move_Results
+	legal_moves: Move_Results,
 ) {
 	outer_loop: for move in player_moves {
-		is_move_legal, _message := eval_move(original_board, move)
+		is_move_legal, _ := eval_move(original_board, move)
 		if is_move_legal  {
 			sa.push(&legal_moves, move)
 		}
@@ -1459,9 +1310,9 @@ get_legal_moves :: proc(
 
 get_king_legal_moves :: proc(
 	board: Board, 
-	player_color: Player_Color
+	player_color: Player_Color,
 ) -> (
-	legal_moves: Move_Results
+	legal_moves: Move_Results,
 ) {
 	king_pos, king_exists := get_king_position(board.tiles, player_color)
 	if !king_exists do return
@@ -1531,8 +1382,8 @@ get_king_position :: proc(tiles: Tiles, player_color: Player_Color) -> (pos: Pos
 }
 
 get_king_piece :: proc(tiles: Tiles, player_color: Player_Color) -> Piece {
-	for row, y in tiles {
-		for tile, x in row {
+	for row in tiles {
+		for tile in row {
 			if piece, is_piece := tile.(Piece); is_piece {
 				if piece.type == .King && piece.color == player_color {
 					return piece
@@ -1545,9 +1396,9 @@ get_king_piece :: proc(tiles: Tiles, player_color: Player_Color) -> Piece {
 }
 
 get_piece_positions_by_player :: proc(
-	tiles: Tiles, player_color: Player_Color
+	tiles: Tiles, player_color: Player_Color,
 ) -> (
-	piece_positions: sa.Small_Array(16, Position)
+	piece_positions: sa.Small_Array(16, Position),
 ) {
 	for row, y in tiles {
 		for tile, x in row {
@@ -1560,12 +1411,12 @@ get_piece_positions_by_player :: proc(
 }
 
 get_pieces_by_player :: proc(
-	tiles: Tiles, player_color: Player_Color
+	tiles: Tiles, player_color: Player_Color,
 ) -> (
-	pieces: sa.Small_Array(16, Piece)
+	pieces: sa.Small_Array(16, Piece),
 ) {
-	for row, y in tiles {
-		for tile, x in row {
+	for row in tiles {
+		for tile in row {
 			if piece, is_piece := tile.(Piece); is_piece && piece.color == player_color {
 				sa.push(&pieces, piece)
 			}
@@ -1576,9 +1427,9 @@ get_pieces_by_player :: proc(
 
 get_threatened_all_positions_for_player :: proc(
 	board: Board, 
-	player_being_threatened: Player_Color
+	player_being_threatened: Player_Color,
 ) -> (
-	threatened_positions: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Position)
+	threatened_positions: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Position),
 ) {
 	// Cant use blind moves... it doesnt take into account all threatened positions
 
@@ -1634,9 +1485,9 @@ init_board :: proc() -> Board {
 }
 
 make_tiles_with_piece_types :: proc(
-	piece_types: [BOARD_LENGTH][BOARD_LENGTH]Piece_Type
+	piece_types: [BOARD_LENGTH][BOARD_LENGTH]Piece_Type,
 ) -> (
-	tiles: Tiles
+	tiles: Tiles,
 ) {
 	for row, y in piece_types {
 		for piece_type, x in row {
@@ -1751,7 +1602,7 @@ get_moves_for_position :: proc(board: Board, pos: Position, player_color: Player
 		// cast ray of length 1 for basic move
 		pos_0 := pos + move_direction
 		tile_0, in_bounds := get_tile_by_position(board.tiles, pos_0)
-		tile_0_empty, tile_0_is_empty := tile_0.(Empty_Tile)
+		_, tile_0_is_empty := tile_0.(Empty_Tile)
 		if tile_0_is_empty && in_bounds {
 			sa.push(&arr, Move_Data{
 				old_position = pos,
@@ -1764,7 +1615,7 @@ get_moves_for_position :: proc(board: Board, pos: Position, player_color: Player
 		if !piece.has_moved {
 			pos_1 := pos + move_direction * 2
 			tile_1, ray2_in_bounds := get_tile_by_position(board.tiles, pos_1)
-			tile_1_empty, tile_1_is_empty := tile_1.(Empty_Tile)
+			_, tile_1_is_empty := tile_1.(Empty_Tile)
 			if tile_0_is_empty && tile_1_is_empty && ray2_in_bounds {
 				sa.push(&arr, Move_Data{
 					old_position = pos,
@@ -1972,10 +1823,10 @@ get_moves_for_position :: proc(board: Board, pos: Position, player_color: Player
 get_threatened_positions_by_piece :: proc(
 	board: Board, 
 	pos: Position, 
-	threatening_player: Player_Color
+	threatening_player: Player_Color,
 ) -> (
 	threatened_positions: sa.Small_Array(MAX_ELEMENTS_FOR_MOVE_RESULTS, Position), 
-	is_en_passant: bool
+	is_en_passant: bool,
 ) {
 	// Add standard moves first
 	enemy_blind_moves := get_moves_for_position(board, pos, threatening_player)
@@ -2005,7 +1856,6 @@ get_threatened_positions_by_piece :: proc(
 	flip_factor: i32 = piece.color == .White ? 1 : -1
 	flip_factor *= g.is_white_bottom ? 1 : -1
 
-	arr: Move_Results
 	#partial top_switch: switch piece.type {
 	case .Pawn:
 		// this pawn is on 5th rank (white) or 4th rank (black)
@@ -2170,12 +2020,6 @@ update_points :: proc(board: ^Board, current_player: Player_Color, piece_type: P
 	board.points[current_player] += PIECE_POINTS[piece_type]
 }
 
-ui_camera :: proc() -> rl.Camera2D {
-	return {
-		zoom = RENDER_TEXTURE_SCALE,
-	}
-}
-
 draw_piece_sprite :: proc(render_position: Vec2i, scale: f32 = 1, piece_type: Piece_Type, piece_color: Piece_Color) {
 	tex := get_texture_by_piece_type(piece_type)
 
@@ -2226,7 +2070,7 @@ get_game_duration :: proc() -> time.Duration {
 get_datetime_now :: proc() -> datetime.DateTime {
 	time_now := time.now()
 	dt, _ := time.time_to_datetime(time_now)
-	local_dt, ok := timezone.datetime_to_tz(dt, g.time.local_timezone) // handles nil region
+	local_dt, _ := timezone.datetime_to_tz(dt, g.time.local_timezone) // handles nil region
 	return local_dt
 }
 
@@ -2593,7 +2437,7 @@ setup_promotion_piece_data :: proc(data: []Promotion_Piece_Data) {
 				y = y0,
 				width = TILE_SIZE,
 				height = TILE_SIZE,
-			}
+			},
 		}
 	}
 }
@@ -2744,7 +2588,7 @@ draw_debug_board_overlay :: proc() {
 draw_promotion_piece_frame :: proc() {
 	rl.DrawRectangle(i32(g.promotion_piece_data[0].rect.x),i32(g.promotion_piece_data[0].rect.y), i32(TILE_SIZE * 1.1 * len(g.promotion_piece_data)), i32(TILE_SIZE * 1.1), rl.LIGHTGRAY)
 
-	for data, i in g.promotion_piece_data {
+	for data in g.promotion_piece_data {
 		tex := get_texture_by_piece_type(data.piece_type)
 		x := data.rect.x
 		y := data.rect.y
@@ -2811,7 +2655,7 @@ draw_debug_overlay :: proc() {
 		sp_has_moved: string
 		if try_move_data, is_phase_try_move := g.board.turn_phase.(Try_Move); is_phase_try_move {
 			if selected_piece, selected_piece_ok := try_move_data.selected_piece.?; selected_piece_ok {
-				piece, is_piece := get_piece_by_position(g.board.tiles, selected_piece.position)
+				piece, _ := get_piece_by_position(g.board.tiles, selected_piece.position)
 				selected_piece_type_text = make_string_from_value(piece.type)
 				sp_has_moved = make_string_from_value(piece.has_moved)
 			} else {
@@ -2963,7 +2807,6 @@ init_test_captures :: proc() {
 	)
 }
 
-
 handle_board_click :: proc() {
 	// Selected Piece Logic
 	clicked_tile_position := get_tile_position_from_mouse_already_over_board()
@@ -3020,7 +2863,7 @@ select_piece :: proc(clicked_tile_position: Position) {
 }
 
 handle_move_attempt :: proc(clicked_tile_position: Position, try_move_data: Try_Move) {
-	selected_piece, is_piece_selected := try_move_data.selected_piece.?
+	selected_piece, _ := try_move_data.selected_piece.?
 
 	proposed_move := Move_Data{
 		old_position = selected_piece.position,
@@ -3055,5 +2898,154 @@ handle_move_attempt :: proc(clicked_tile_position: Position, try_move_data: Try_
 	// if illegal, evaluate the move and say why
 	} else {
 		g.message = get_message_for_illegal_move(g.board, proposed_move)
+	}
+}
+
+eval_promotion :: proc(board: ^Board) -> bool {
+	// if pawn in promotion row -> Post_Move
+	// check promotion row for pawns. Can only be 1 pawn to promote, logically.
+	promotion_row_index := g.current_player == .White ?  BOARD_LENGTH - 1 : 0
+	for tile, x in g.board.tiles[promotion_row_index] {
+		piece, is_piece := tile.(Piece)
+		if is_piece && piece.type == .Pawn && piece.color == g.current_player {
+			g.board.tile_pos_to_promote = Position{i32(x),i32(promotion_row_index)}
+		}
+	}
+	if _, ok := g.tile_pos_to_promote.(Position); ok {
+		return true
+	} 
+	return false
+}
+
+draw_ui :: proc() {
+	// NB: text size min is 10, steps to 11, 12
+	// Top Status Bar
+	{
+		topbar_width: f32 = LOGICAL_SCREEN_WIDTH
+		topbar_height: f32 = TOPBAR_HEIGHT
+		rl.GuiStatusBar({0,0,topbar_width, topbar_height}, "")
+		BUTTON_WIDTH :: 70
+		BUTTON_HEIGHT :: 15
+		y: f32 = 4
+		x: f32 = 5
+		if rl.GuiButton({x, y, BUTTON_WIDTH, BUTTON_HEIGHT}, "New Game") {
+			log.debug("Click New Game")
+			play_sfx(.Button_Click)
+			game_reset()
+		}
+		x += 75
+		if rl.GuiButton({x,y,BUTTON_WIDTH, BUTTON_HEIGHT}, "Draw") {
+			log.debug("Click Draw")
+			g.draw_offered[g.current_player] = g.n_turns
+			g.turn_phase = End{}
+			play_sfx(.Button_Click)
+		}
+		x += 75
+		if rl.GuiButton({x,y,15,BUTTON_HEIGHT}, "#193#") {
+			log.debug("Click Help")
+			g.show_help = true
+			play_sfx(.Button_Click)
+		}
+
+		x += 70
+		rl.GuiDrawIcon(.ICON_CLOCK, i32(x-20),i32(y-2),1,rl.WHITE)
+
+		rl.DrawText(make_duration_display_string(get_game_duration()), i32(x), 7, 11, rl.WHITE)
+		x += 80
+		rl.DrawText(fmt.ctprintf("Turn: %v", g.board.n_turns), i32(x), 7, 11, rl.WHITE)
+
+		if rl.GuiButton({465,y,BUTTON_WIDTH, BUTTON_HEIGHT}, "Exit") {
+			log.debug("Click Exit")
+			play_sfx(.Button_Click)
+			g.app_state = .Exit
+		}
+
+
+		// centering logic
+		// title_width := rl.MeasureText(fmt.ctprint(title), 32)
+		// rl.DrawText(fmt.ctprint(title), panel_x + i32((panel_width - title_width) / 2), panel_y + 20, 32, rl.YELLOW)
+		topbar_message := fmt.ctprintf("%v %v", g.message, g.dead_position_message)
+		topbar_message_width := rl.MeasureText(topbar_message, 8)
+		rl.DrawText(topbar_message, i32((i32(topbar_width) - topbar_message_width)/2), 27, 8, rl.RED)
+	}
+
+	draw_player_panel :: proc(panel_bounds: Rec, player_color: Player_Color, current_player: Player_Color, title: string, player_total_duration: time.Duration, turn_duration: time.Duration, captures: []Piece_Type, is_check: bool) {
+		ygap :: 22
+		PANEL_BORDER_THICKNESS :: 2
+		is_current_player := player_color == current_player
+
+		rl.GuiPanel(panel_bounds, nil)
+		if is_current_player {
+			rl.DrawRectangleLinesEx(panel_bounds, PANEL_BORDER_THICKNESS, rl.GREEN)
+		} else {
+			rl.DrawRectangleLinesEx(panel_bounds, PANEL_BORDER_THICKNESS, rl.LIGHTGRAY)
+		}
+		x0 := panel_bounds.x
+		y0 := panel_bounds.y
+
+		x := x0 + 5
+		y := y0 + 5
+		rl.GuiLabel({x, y, panel_bounds.width, 10}, strings.clone_to_cstring(title))
+
+		y += 15
+		cstr_player_duration := make_duration_display_string(player_total_duration)
+		rl.GuiLabel({x, y, 100, 10}, cstr_player_duration)
+
+		if is_current_player {
+			y += 15
+			cstr_turn_duration := make_duration_display_string(turn_duration)
+			cstr_player_turn_duration_text := fmt.ctprintf("+%v", cstr_turn_duration)
+			rl.GuiLabel({x, y, 100, 10}, cstr_player_turn_duration_text)
+
+			if g.is_check {
+				y += 15
+				rl.DrawText("CHECK", i32(x + 50), i32(y0 + 5), 10, rl.RED)
+			}
+		}
+
+		// Draw captured pieces from bottom up
+		xcap :i32= i32(x0 + 10)
+		ycap :i32= i32(panel_bounds.y + panel_bounds.height) - 30 * 9
+		for piece_type,i in captures {
+			if i % 8 == 0 && i > 0 {
+				 xcap += 40
+				 ycap -= 8 * ygap
+			}
+			ycap += ygap
+			draw_piece_sprite({xcap, ycap}, 0.8, piece_type, get_other_player_color(player_color))
+		}
+	}
+
+	// White Panel (Left)
+	turn_duration := get_turn_duration()
+	white_panel_bounds := LEFT_PANEL_BOUNDS
+	white_total_duration := get_player_duration(.White)
+	draw_player_panel(white_panel_bounds, .White, g.current_player, "White", white_total_duration, turn_duration, sa.slice(&g.board.captures[.White]), g.is_check)
+
+	// Black Panel (Right)
+	black_panel_bounds := RIGHT_PANEL_BOUNDS
+	black_total_duration := get_player_duration(.Black)
+	draw_player_panel(black_panel_bounds, .Black, g.current_player, "Black", black_total_duration, turn_duration, sa.slice(&g.board.captures[.Black]), g.is_check)
+
+	if _, ok := g.turn_phase.(Choose_Promotion_Piece); ok {
+		draw_promotion_piece_frame()
+	}
+
+	if g.show_help {
+		draw_help_modal()
+	}
+
+	// Draw Checkmate / Gameover state
+	if g.gameover {
+		if g.is_checkmate {
+			winner := get_other_player_color(g.current_player)
+			t := fmt.ctprintf("Checkmate! %v wins!", winner)
+			rl.DrawText(t,140,180, 24, rl.RED)
+		} else if g.is_draw {
+			t := fmt.ctprintf("- Draw -")
+			rl.DrawText(t, 250,180, 24, rl.RED)
+
+		}
+
 	}
 }

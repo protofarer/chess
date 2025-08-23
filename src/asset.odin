@@ -19,4 +19,5 @@ Sound_ID :: enum {
 	Piece_Capture,
 	Piece_Select,
 	Piece_Promote,
+	Check,
 }
